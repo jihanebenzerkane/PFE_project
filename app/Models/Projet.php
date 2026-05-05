@@ -7,8 +7,25 @@ use Illuminate\Database\Eloquent\Model;
 class Projet extends Model
 {
     protected $table = "projets";
-    protected $fillable = ["title", "description", "entreprise", "statut", "etudiant_id"];
-    public function etudiant(){
-        return $this->belongsTo(etudiant::class);
+    protected $fillable = [
+        'etudiant_id',
+        'etudiant2_id',
+        'encadrant_id',
+        'sujet',
+        'nom_entreprise',
+        'encadrant_industriel',
+        'langue_soutenance',
+    ];
+
+    public function etudiant() {
+        return $this->belongsTo(Etudiant::class, 'etudiant_id');
+    }
+
+    public function etudiant2() {
+        return $this->belongsTo(Etudiant::class, 'etudiant2_id');
+    }
+
+    public function encadrant() {
+        return $this->belongsTo(Enseignant::class, 'encadrant_id');
     }
 }
