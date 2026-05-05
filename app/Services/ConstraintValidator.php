@@ -2,111 +2,188 @@
 
 namespace App\Services;
 
-use App\Models\Creneau;
-use App\Models\Soutenance;
 use App\Models\Enseignant;
+use App\Models\Soutenance;
+use App\Models\Creneau;
+use App\Models\Projet;
 use App\Models\Jury;
+use Carbon\Carbon;
 
 class ConstraintValidator
 {
-    // Valide toutes les règles en même temps
-    public function validateAll(
-        int $ensId,
-        int $creneauId,
-        int $salleId,
-        Jury $jury
-    ): bool {
-        return $this->validateCapacity($salleId, $creneauId)
-            && $this->validateNoConflict($ensId, $creneauId)
-            && $this->validateQuotas($ensId)
-            && $this->validateJuryComposition($jury)
-            && $this->validateDailyBalance($ensId, $creneauId);
+    /**
+     * Valider l'affectation globale (encadrants assignés aux projets).
+     */
+    public function validateAffectation(): bool
+    {
+        // Vérifier si des projets n'ont pas d'encadrant assigné
+        $unassignedProjects = Projet::whereNull('encadrant_id')->count();
+        
+        return $unassignedProjects === 0;
     }
 
-    // Règle 1 : la salle est-elle libre dans ce créneau ?
-    public function validateCapacity(int $salleId, int $creneauId): bool
+    /**
+     * Valider que la charge d'encadrement est équilibrée (moyenne).
+     */
+    public function validateEncadrementAverage(): bool
     {
-        $dejaOccupee = Soutenance::where('salle_id', $salleId)
-            ->where('creneau_id', $creneauId)
+        $totalProjets = Projet::count();
+        $totalEnseignants = Enseignant::count();
+        
+        if ($totalEnseignants === 0) return true;
+
+        $average = ceil($totalProjets / $totalEnseignants);
+        $maxAllowed = $average + 2; // Tolérance stricte de +2 projets maximum par rapport à la moyenne
+
+        $overloaded = Enseignant::withCount('projets')
+            ->having('projets_count', '>', $maxAllowed)
             ->exists();
 
-        return !$dejaOccupee;
+        return !$overloaded;
     }
 
-    // Règle 2 : l'enseignant est-il déjà occupé dans ce créneau ?
-    public function validateNoConflict(int $ensId, int $creneauId): bool
+    /**
+     * Valider le planning complet (toutes les soutenances ont un créneau et une salle).
+     */
+    public function validatePlanning(): bool
     {
-        // Déjà encadrant dans ce créneau ?
-        $dejaEncadrant = Soutenance::where('creneau_id', $creneauId)
-            ->where('encadrant_id', $ensId)
-            ->exists();
+        $unscheduled = Projet::whereDoesntHave('soutenance', function($query) {
+            $query->whereNotNull('creneau_id')->whereNotNull('salle');
+        })->count();
 
-        // Déjà dans un jury dans ce créneau ?
-        $dejaJury = Soutenance::where('creneau_id', $creneauId)
-            ->whereHas('jury.enseignants', function ($q) use ($ensId) {
-                $q->where('enseignant_id', $ensId);
+        return $unscheduled === 0;
+    }
+
+    /**
+     * Vérifier qu'un enseignant n'est pas programmé deux fois en même temps.
+     */
+    public function validateNoConflict($ensId, $creneauId): bool
+    {
+        // Un enseignant ne peut pas avoir deux soutenances (comme encadrant ou jury) sur le même créneau
+        $conflict = Soutenance::where('creneau_id', $creneauId)
+            ->where(function ($query) use ($ensId) {
+                // Est-il encadrant du projet ?
+                $query->whereHas('projet', function ($q) use ($ensId) {
+                    $q->where('encadrant_id', $ensId);
+                })
+                // Ou est-il membre du jury ?
+                ->orWhereHas('jury.enseignants', function ($q) use ($ensId) {
+                    $q->where('enseignants.id', $ensId);
+                });
             })
             ->exists();
 
-        return !$dejaEncadrant && !$dejaJury;
+        return !$conflict;
     }
 
-    // Règle 3 : l'enseignant n'a pas dépassé son quota ?
-    public function validateQuotas(int $ensId): bool
+    /**
+     * Vérifier la pause minimale de 1 heure pour un enseignant entre ses soutenances.
+     */
+    public function validatePauseMinimale($ensId): bool
     {
-        $enseignant = Enseignant::find($ensId);
+        $soutenances = Soutenance::whereHas('projet', function ($q) use ($ensId) {
+                $q->where('encadrant_id', $ensId);
+            })
+            ->orWhereHas('jury.enseignants', function ($q) use ($ensId) {
+                $q->where('enseignants.id', $ensId);
+            })
+            ->with('creneau')
+            ->get()
+            ->sortBy(function($s) {
+                return $s->creneau->date . ' ' . $s->creneau->heure;
+            });
 
-        // Combien de jurys il a déjà fait ?
-        $nbJurys = Jury::whereHas('enseignants', function ($q) use ($ensId) {
-            $q->where('enseignant_id', $ensId);
-        })->count();
-
-        return $nbJurys < $enseignant->quota_max;
-    }
-
-    // Règle 4 : le jury est bien formé ?
-    public function validateJuryComposition(Jury $jury): bool
-    {
-        $membres = $jury->enseignants;
-
-        // Le jury doit avoir exactement 2 membres
-        if ($membres->count() !== 2) {
-            return false;
-        }
-
-        // Récupérer la soutenance liée à ce jury
-        $soutenance = $jury->soutenance;
-
-        // L'encadrant ne peut pas être membre du jury
-        foreach ($membres as $membre) {
-            if ($membre->id === $soutenance->encadrant_id) {
-                return false;
+        $previousTime = null;
+        foreach ($soutenances as $soutenance) {
+            if (!$soutenance->creneau) continue;
+            
+            $currentTime = Carbon::parse($soutenance->creneau->date . ' ' . $soutenance->creneau->heure);
+            
+            if ($previousTime) {
+                $diffInMinutes = $previousTime->diffInMinutes($currentTime);
+                // Si la différence est de moins de 120 minutes (60m soutenance + 60m pause)
+                if ($diffInMinutes < 120) {
+                    return false;
+                }
             }
+            $previousTime = $currentTime;
         }
-
+        
         return true;
     }
 
-    // Règle 5 : l'enseignant n'intervient pas trop ce jour-là ?
-    public function validateDailyBalance(int $ensId, int $creneauId): bool
+    /**
+     * Valider la capacité d'une salle.
+     */
+    public function validateCapacity($salle): bool
     {
-        $creneau = Creneau::find($creneauId);
-        $date    = $creneau->date;
+        // Dans la version actuelle, on valide simplement que la salle n'est pas vide
+        return !empty(trim($salle));
+    }
 
-        // Fois où il est encadrant ce jour
-        $nbEncadrant = Soutenance::where('encadrant_id', $ensId)
-            ->whereHas('creneau', fn($q) => $q->where('date', $date))
-            ->count();
+    /**
+     * Valider la composition d'un jury (L'encadrant ne doit pas être Rapporteur).
+     */
+    public function validateJuryComposition($jury): bool
+    {
+        if (!$jury || !$jury->soutenances()->first() || !$jury->soutenances()->first()->projet) {
+            return false;
+        }
 
-        // Fois où il est dans un jury ce jour
-        $nbJury = Soutenance::whereHas('jury.enseignants', function ($q) use ($ensId) {
-                $q->where('enseignant_id', $ensId);
+        $encadrantId = $jury->soutenances()->first()->projet->encadrant_id;
+        
+        // Vérifier si l'encadrant est dans les membres de ce jury
+        $isInJury = $jury->enseignants->contains('id', $encadrantId);
+
+        return !$isInJury;
+    }
+
+    /**
+     * Valider qu'il y a un nombre minimum d'informaticiens dans le jury.
+     */
+    public function validateInformaticsCount(): bool
+    {
+        $jurys = Jury::with('enseignants')->get();
+        
+        foreach ($jurys as $jury) {
+            $hasInformatician = false;
+            foreach ($jury->enseignants as $prof) {
+                if ($prof->isInformatique()) {
+                    $hasInformatician = true;
+                    break;
+                }
+            }
+            // S'il y a un jury sans aucun informaticien, la validation échoue
+            if (!$hasInformatician && $jury->enseignants->count() > 0) {
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    /**
+     * Valider la mixité des filières par jour.
+     */
+    public function validateDailyFiliereMix($date): bool
+    {
+        $filieresOnDate = Soutenance::whereHas('creneau', function($q) use ($date) {
+                $q->where('date', $date);
             })
-            ->whereHas('creneau', fn($q) => $q->where('date', $date))
-            ->count();
+            ->join('projets', 'soutenances.projet_id', '=', 'projets.id')
+            ->join('etudiants', 'projets.etudiant_id', '=', 'etudiants.id')
+            ->distinct('etudiants.filiere')
+            ->count('etudiants.filiere');
 
-        $total = $nbEncadrant + $nbJury;
+        $totalSoutenances = Soutenance::whereHas('creneau', function($q) use ($date) {
+            $q->where('date', $date);
+        })->count();
 
-        return $total < 4;
+        // S'il y a plus de 3 soutenances ce jour-là, on exige au moins 2 filières différentes pour la mixité
+        if ($totalSoutenances > 3 && $filieresOnDate < 2) {
+            return false;
+        }
+
+        return true;
     }
 }
