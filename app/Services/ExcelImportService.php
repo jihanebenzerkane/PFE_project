@@ -18,7 +18,7 @@ class ExcelImportService {
   $this->enseignantDAO = $enseignantDAO;
  }
 
- public function import(UploadedFile $file): int {
+ public function import(UploadedFile $file, string $filiere = 'TDIA'): int {
   $rows = Excel::toArray([], $file)[0]; 
   $count = 0;
   foreach($rows as $index => $row){
@@ -38,7 +38,7 @@ class ExcelImportService {
         'cne' => $cne,
         'nom' => $nom,
         'prenom' => $prenom,
-        'filiere' => 'ID',
+        'filiere' => $filiere,
         'email_personnel' => trim($emailPerso ?? ''),
         'email_academique' => trim($emailAcad ?? ''),
     ]);

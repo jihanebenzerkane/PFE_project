@@ -22,8 +22,9 @@ class ImportController extends Controller{
        $count = $this->importService->importEncadrants($file);
        $message = "$count enseignants importés avec succès.";
    } else {
-       $count = $this->importService->import($file);
-       $message = "$count étudiants importés avec succès.";
+       $filiere = $request->input('filiere', 'TDIA');
+       $count = $this->importService->import($file, $filiere);
+       $message = "$count étudiants importés avec succès ($filiere).";
    }
    return redirect()->back()->with('success', $message);
   }

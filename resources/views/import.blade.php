@@ -15,12 +15,12 @@
 
     <h2>Importer des étudiants et projets (Excel)</h2>
 
-    {{-- Message de succès --}}
+
     @if(session('success'))
         <div class="success">{{ session('success') }}</div>
     @endif
 
-    {{-- Erreurs de validation --}}
+
     @if($errors->any())
         <div class="error">
             <ul>
@@ -34,6 +34,14 @@
     <form action="{{ route('import.store') }}" method="POST" enctype="multipart/form-data">
         @csrf
        
+        <label>Filière (Pour les étudiants) :</label><br>
+        <select name="filiere" style="padding: 5px; margin-top: 5px; margin-bottom: 15px; width: 100%;">
+            <option value="TDIA">TDIA (Transformation Digitale & IA)</option>
+            <option value="ID">ID (Ingénierie des Données)</option>
+            <option value="GI">GI (Génie Informatique)</option>
+        </select>
+        <br>
+        
         <label>Choisir un fichier Excel (.xlsx) :</label><br>
         <input type="file" name="file" accept=".xlsx,.xls">
         <br><br>
