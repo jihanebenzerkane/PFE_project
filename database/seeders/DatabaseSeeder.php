@@ -46,9 +46,9 @@ class DatabaseSeeder extends Seeder
 
         // 4. Create Creneau
         $creneauId = DB::table('creneaux')->insertGetId([
-            'date' => '2026-06-15',
-            'heure_debut' => '10:00:00',
-            'heure_fin' => '11:00:00',
+            'date' => '2026-06-22',
+            'heure_debut' => '09:00:00',
+            'heure_fin' => '10:00:00',
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -73,7 +73,7 @@ class DatabaseSeeder extends Seeder
             'projet_id' => $projetId,
             'creneau_id' => $creneauId,
             'jury_id' => $juryId,
-            'salle' => 'Salle de Conférence A',
+            'salle' => 'S4A',
             'created_at' => now(),
             'updated_at' => now(),
         ]);
