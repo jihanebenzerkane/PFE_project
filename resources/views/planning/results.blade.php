@@ -327,7 +327,11 @@
                             <td>
                                 <div class="fw-600 text-dark">{{ $row['etudiant_nom'] ?? '' }}
                                     {{ $row['etudiant_prenom'] ?? '' }}</div>
-                                <div class="text-gray mt-1">Sujet: {{ Str::limit($row['titre'] ?? '—', 30) }}</div>
+                                @if(!empty($row['etudiant2_nom']))
+                                    <div class="fw-600 text-dark border-top mt-1 pt-1">{{ $row['etudiant2_nom'] }}
+                                        {{ $row['etudiant2_prenom'] ?? '' }}</div>
+                                @endif
+                                <div class="text-gray mt-1">Sujet: {{ Str::limit($row['titre'] ?? '—', 45) }}</div>
                             </td>
                             <td>
                                 @if($fShort !== '—')

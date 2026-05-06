@@ -210,11 +210,19 @@ class WordExportService
             // Salle
             $table->addCell($widths[6], ['bgColor' => $bgBase])->addText($row['salle'] ?? '', ['bold' => true, 'size' => 8], $centerPara);
             
-            // Nom etudiant
-            $table->addCell($widths[7], ['bgColor' => ltrim($filiereColor, '#')])->addText(strtoupper($row['etudiant_nom'] ?? ''), ['size' => 8]);
+            // Nom etudiant(s): binomes stay in one planning row and share jury/slot.
+            $nomCell = $table->addCell($widths[7], ['bgColor' => ltrim($filiereColor, '#')]);
+            $nomCell->addText(strtoupper($row['etudiant_nom'] ?? ''), ['size' => 8]);
+            if (!empty($row['etudiant2_nom'])) {
+                $nomCell->addText(strtoupper($row['etudiant2_nom']), ['size' => 8]);
+            }
             
-            // Prenom etudiant
-            $table->addCell($widths[8], ['bgColor' => ltrim($filiereColor, '#')])->addText($row['etudiant_prenom'] ?? '', ['size' => 8]);
+            // Prenom etudiant(s)
+            $prenomCell = $table->addCell($widths[8], ['bgColor' => ltrim($filiereColor, '#')]);
+            $prenomCell->addText($row['etudiant_prenom'] ?? '', ['size' => 8]);
+            if (!empty($row['etudiant2_prenom'])) {
+                $prenomCell->addText($row['etudiant2_prenom'], ['size' => 8]);
+            }
             
             // Filiere
             $fText = '';
@@ -293,10 +301,21 @@ class WordExportService
                     $student = $names[$k] ?? null;
                     $eNom    = strtoupper($student['etu_nom'] ?? '');
                     $ePrenom = $student['etu_prenom'] ?? '';
+                    $e2Nom    = strtoupper($student['etu2_nom'] ?? '');
+                    $e2Prenom = $student['etu2_prenom'] ?? '';
                     $eBgHex  = $student['bg'] ?? '#ffffff';
                     $eBgWord = strtoupper(ltrim($eBgHex, '#'));
-                    $table->addCell(2250, ['bgColor' => $eBgWord])->addText($eNom, ['size' => 8]);
-                    $table->addCell(2250, ['bgColor' => $eBgWord])->addText($ePrenom, ['size' => 8]);
+                    $nomCell = $table->addCell(2250, ['bgColor' => $eBgWord]);
+                    $nomCell->addText($eNom, ['size' => 8]);
+                    if ($e2Nom !== '') {
+                        $nomCell->addText($e2Nom, ['size' => 8]);
+                    }
+
+                    $prenomCell = $table->addCell(2250, ['bgColor' => $eBgWord]);
+                    $prenomCell->addText($ePrenom, ['size' => 8]);
+                    if ($e2Prenom !== '') {
+                        $prenomCell->addText($e2Prenom, ['size' => 8]);
+                    }
                 }
             }
         }

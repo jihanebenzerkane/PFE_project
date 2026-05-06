@@ -44,8 +44,12 @@ class ExcelImportService
 
                 if (!$this->etudiantRepository->findByCne($cne)) {
                     $this->etudiantRepository->create([
-                        'cne' => $cne, 'nom' => $nom, 'prenom' => $prenom, 'filiere' => $filiere,
-                        'email_personnel' => trim($emailPerso ?? ''), 'email_academique' => trim($emailAcad ?? ''),
+                        'cne' => $cne,
+                        'nom' => $nom,
+                        'prenom' => $prenom,
+                        'filiere' => $filiere,
+                        'email_personnel' => trim($emailPerso ?? ''),
+                        'email_academique' => trim($emailAcad ?? ''),
                     ]);
                     $results['etudiants']++;
                 }
@@ -58,10 +62,12 @@ class ExcelImportService
                 if ($index < 2) continue; // Skip header
                 [$nom, $prenom, $discipline] = array_pad($row, 3, null);
                 if (empty($nom) || empty($prenom)) continue;
-                
+
                 if (!$this->enseignantRepository->findByNomPrenom($nom, $prenom)) {
                     $this->enseignantRepository->create([
-                        'nom' => trim($nom), 'prenom' => trim($prenom), 'specialite' => trim($discipline ?? ''),
+                        'nom' => trim($nom),
+                        'prenom' => trim($prenom),
+                        'specialite' => trim($discipline ?? ''),
                     ]);
                     $results['enseignants']++;
                 }
@@ -88,30 +94,67 @@ class ExcelImportService
 
     public function import(UploadedFile $file, string $filiere = 'TDIA'): int
     {
-        $rows  = Excel::toArray([], $file)[0];
+        $rows  = Excel::toArray([], $file)[0] ?? [];
         $count = 0;
 
         foreach ($rows as $index => $row) {
             if ($index === 0) continue;
-            $row = array_pad($row, 5, null);
-            [$cne, $nom, $prenom, $emailPerso, $emailAcad] = $row;
+            $row = array_pad($row, 8, null);
 
-            if (empty(trim((string)$nom)) || empty(trim((string)$prenom))) continue;
+            [
+                $cne,
+                $nom,
+                $prenom,
+                $cne2,
+                $nom2,
+                $prenom2,
+                $sujet,
+                $langue
+            ] = $row;
 
-            // Simple create — table is wiped before each batch import
-            \App\Models\Etudiant::create([
-                'cne'              => $cne ?: null,
-                'nom'              => trim($nom),
-                'prenom'           => trim($prenom),
-                'filiere'          => $filiere,
-                'email_personnel'  => trim($emailPerso ?? ''),
-                'email_academique' => trim($emailAcad  ?? ''),
+            $nom    = trim((string) $nom);
+            $prenom = trim((string) $prenom);
+            if (empty($nom) || empty($prenom)) continue;
+
+            // Étudiant 1
+            $etudiant = \App\Models\Etudiant::create([
+                'cne'    => trim((string) $cne) ?: null,
+                'nom'    => $nom,
+                'prenom' => $prenom,
+                'filiere' => $filiere,
             ]);
-            $count++;
+
+            // Étudiant 2 (binôme — optional)
+            $etudiant2Id = null;
+            $nom2    = trim((string) $nom2);
+            $prenom2 = trim((string) $prenom2);
+            if (!empty($nom2) && !empty($prenom2)) {
+                $etudiant2 = \App\Models\Etudiant::create([
+                    'cne'    => trim((string) $cne2) ?: null,
+                    'nom'    => $nom2,
+                    'prenom' => $prenom2,
+                    'filiere' => $filiere,
+                ]);
+                $etudiant2Id = $etudiant2->id;
+            }
+
+            // ONE Projet for both students: a binome shares encadrant,
+            // soutenance, jury and schedule slot.
+            \App\Models\Projet::create([
+                'cne'               => trim((string) $cne) ?: null,
+                'etudiant_id'       => $etudiant->id,
+                'etudiant2_id'      => $etudiant2Id,   // null for solo
+                'sujet'             => trim((string) $sujet),
+                'titre'             => trim((string) $sujet),
+                'langue_soutenance' => trim((string) ($langue ?: 'Français')),
+            ]);
+
+            $count += $etudiant2Id ? 2 : 1;
         }
 
         return $count;
     }
+
 
     public function importEncadrants(UploadedFile $file): int
     {

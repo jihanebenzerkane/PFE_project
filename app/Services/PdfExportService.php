@@ -19,6 +19,7 @@ class PdfExportService
     {
         $soutenances = Soutenance::with([
             'projet.etudiant',
+            'projet.etudiant2',
             'projet.encadrant',
             'jury.enseignants',
             'creneau',
@@ -33,7 +34,7 @@ class PdfExportService
 
     public function generateSupervision(): \Symfony\Component\HttpFoundation\Response
     {
-        $enseignants = Enseignant::with('projets.etudiant')->get();
+        $enseignants = Enseignant::with(['projets.etudiant', 'projets.etudiant2'])->get();
 
         $pdf = Pdf::loadView('pdf.supervision', [
             'enseignants' => $enseignants,

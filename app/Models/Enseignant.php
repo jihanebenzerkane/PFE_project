@@ -13,8 +13,7 @@ class Enseignant extends Model
     protected $fillable = [
         'nom',
         'prenom',
-        'specialite',   // mapped from Excel 'discipline' column
-        'disponibilite'
+        'specialite',        
     ];
 
     public function projets()

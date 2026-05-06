@@ -16,6 +16,7 @@ return new class extends Migration
             $table->date('date');
             $table->time('heure_debut')->nullable();
             $table->time('heure_fin')->nullable();
+            $table->integer('capacite')->default(0);
             $table->timestamps();
         });
     }

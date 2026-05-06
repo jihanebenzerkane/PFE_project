@@ -59,7 +59,7 @@ class ExportController extends Controller
     /** Download supervision report as PDF (legacy route) */
     public function downloadSupervision()
     {
-        $enseignants = \App\Models\Enseignant::with('projets.etudiant')->get();
+        $enseignants = \App\Models\Enseignant::with(['projets.etudiant', 'projets.etudiant2'])->get();
         $pdf = Pdf::loadView('pdf.supervision', compact('enseignants'));
         return $pdf->download('supervision_' . now()->format('d-m-Y') . '.pdf');
     }

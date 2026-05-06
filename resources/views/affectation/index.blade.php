@@ -115,22 +115,29 @@
                         </tr>
                     </thead>
                     <tbody>
-                        @forelse($etudiants as $i => $etudiant)
+                        @forelse($projets as $i => $projet)
                             <tr>
                                 <td style="color:#94A3B8; font-size:0.8rem;">#{{ str_pad($i+1, 2, '0', STR_PAD_LEFT) }}</td>
                                 <td>
-                                    <div class="student-name">{{ $etudiant->nom }} {{ $etudiant->prenom }}</div>
-                                    <div class="student-sub">{{ $etudiant->cne }}</div>
+                                    @if($projet->etudiant)
+                                        <div class="student-name">{{ $projet->etudiant->nom }} {{ $projet->etudiant->prenom }}</div>
+                                        <div class="student-sub">{{ $projet->etudiant->cne }}</div>
+                                    @endif
+                                    @if($projet->etudiant2)
+                                        <div style="border-top: 1px dashed #E2E8F0; margin: 6px 0; padding-top: 6px;"></div>
+                                        <div class="student-name">{{ $projet->etudiant2->nom }} {{ $projet->etudiant2->prenom }}</div>
+                                        <div class="student-sub">{{ $projet->etudiant2->cne }}</div>
+                                    @endif
                                 </td>
                                 <td>
                                     @php 
-                                        $f = mb_strtoupper($etudiant->filiere ?? '', 'UTF-8');
+                                        $f = mb_strtoupper($projet->etudiant->filiere ?? '', 'UTF-8');
                                         $filiereCode = 'other';
                                         if (str_contains($f, 'TDIA') || str_contains($f, 'TRANSFORM') || str_contains($f, 'ARTIFIC')) {
                                             $filiereCode = 'tdia';
-                                        } elseif (str_contains($f, 'INGÉNIERIE') || str_contains($f, 'INGENIERIE') || str_contains($f, 'DONNÉES') || str_contains($f, 'DONNEES')) {
+                                        } elseif (str_contains($f, 'INGÉNIERIE') || str_contains($f, 'INGENIERIE') || str_contains($f, 'DONNÉES') || str_contains($f, 'DONNEES') || str_contains($f, 'ID')) {
                                             $filiereCode = 'id';
-                                        } elseif (str_contains($f, 'GÉNIE') || str_contains($f, 'GENIE')) {
+                                        } elseif (str_contains($f, 'GÉNIE') || str_contains($f, 'GENIE') || str_contains($f, 'GI')) {
                                             $filiereCode = 'gi';
                                         }
                                     @endphp
@@ -141,18 +148,18 @@
                                     @elseif($filiereCode === 'id')
                                         <span class="badge badge-id">ID</span>
                                     @else
-                                        <span class="badge badge-other">{{ $etudiant->filiere ?? '—' }}</span>
+                                        <span class="badge badge-other">{{ $projet->etudiant->filiere ?? '—' }}</span>
                                     @endif
                                 </td>
                                 <td>
-                                    @if($etudiant->projet?->encadrant)
-                                        Dr. {{ $etudiant->projet->encadrant->nom }} {{ $etudiant->projet->encadrant->prenom }}
+                                    @if($projet->encadrant)
+                                        Dr. {{ $projet->encadrant->nom }} {{ $projet->encadrant->prenom }}
                                     @else
                                         <span style="color:#94A3B8;">—</span>
                                     @endif
                                 </td>
                                 <td>
-                                    @if($etudiant->projet?->encadrant)
+                                    @if($projet->encadrant)
                                         <span class="badge badge-ok">✓ Affecté</span>
                                     @else
                                         <span class="badge badge-none">Non affecté</span>
@@ -162,7 +169,7 @@
                         @empty
                             <tr>
                                 <td colspan="5" style="text-align:center; color:#94A3B8; padding: 40px;">
-                                    Aucun étudiant importé. <a href="{{ route('import.form') }}" style="color:#3B82F6;">Importer un fichier Excel</a>
+                                    Aucun projet importé. <a href="{{ route('import.form') }}" style="color:#3B82F6;">Importer un fichier Excel</a>
                                 </td>
                             </tr>
                         @endforelse

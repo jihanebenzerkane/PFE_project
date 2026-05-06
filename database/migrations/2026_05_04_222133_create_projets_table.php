@@ -13,8 +13,12 @@ return new class extends Migration
     {
         Schema::create('projets', function (Blueprint $table) {
             $table->id();
-            $table->string('titre')->nullable();
+            $table->string('cne')->nullable();
             $table->foreignId('etudiant_id')->constrained('etudiants')->onDelete('cascade');
+            $table->foreignId('etudiant2_id')->nullable()->constrained('etudiants')->onDelete('set null');
+            $table->string('sujet')->nullable();
+            $table->string('titre')->nullable();
+            $table->string('langue_soutenance')->nullable()->default('Français');
             $table->foreignId('encadrant_id')->nullable()->constrained('enseignants')->onDelete('set null');
             $table->timestamps();
         });

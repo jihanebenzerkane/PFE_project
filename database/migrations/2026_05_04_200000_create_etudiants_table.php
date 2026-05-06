@@ -13,9 +13,12 @@ return new class extends Migration
     {
         Schema::create('etudiants', function (Blueprint $table) {
             $table->id();
+            $table->string('cne')->nullable();
             $table->string('nom');
             $table->string('prenom');
-            $table->string('filiere');
+            $table->string('filiere')->default('Inconnue');
+            $table->string('email_personnel')->nullable();
+            $table->string('email_academique')->nullable();
             $table->timestamps();
         });
     }

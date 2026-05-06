@@ -11,8 +11,16 @@ class Soutenance extends Model
 
     protected $table = 'soutenances';
 
-    // Uses your schema: projet_id, creneau_id, jury_id, salle (string)
-    protected $fillable = ['projet_id', 'creneau_id', 'jury_id', 'salle'];
+    protected $fillable = [
+        'cne',
+        'projet_id',
+        'encadrant_id',
+        'jury_id',
+        'salle_id',
+        'creneau_id',
+        'salle',       // kept as string for backward compat with scheduling code
+        'langue',
+    ];
 
     public function projet()
     {
@@ -27,5 +35,15 @@ class Soutenance extends Model
     public function jury()
     {
         return $this->belongsTo(Jury::class);
+    }
+
+    public function encadrant()
+    {
+        return $this->belongsTo(Enseignant::class, 'encadrant_id');
+    }
+
+    public function salleRelation()
+    {
+        return $this->belongsTo(Salle::class, 'salle_id');
     }
 }

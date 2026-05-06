@@ -39,6 +39,9 @@
                 <td>
                     @if($soutenance->projet && $soutenance->projet->etudiant)
                         {{ $soutenance->projet->etudiant->nom }} {{ $soutenance->projet->etudiant->prenom }}
+                        @if($soutenance->projet->etudiant2)
+                            <br>{{ $soutenance->projet->etudiant2->nom }} {{ $soutenance->projet->etudiant2->prenom }}
+                        @endif
                     @else
                         N/A
                     @endif

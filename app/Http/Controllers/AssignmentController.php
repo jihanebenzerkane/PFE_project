@@ -32,7 +32,7 @@ class AssignmentController extends Controller
         // Soutenances par filière (aggregated to short names)
         $rawFiliere = Etudiant::selectRaw('filiere, COUNT(*) as total')->groupBy('filiere')->get();
         $parFiliereData = [];
-        foreach($rawFiliere as $item) {
+        foreach ($rawFiliere as $item) {
             $f = mb_strtoupper($item->filiere ?? '', 'UTF-8');
             $fShort = 'Autre';
             if (str_contains($f, 'TDIA') || str_contains($f, 'TRANSFORM') || str_contains($f, 'ARTIFIC')) {
@@ -63,48 +63,57 @@ class AssignmentController extends Controller
 
     public function showAffectation()
     {
-        $etudiants   = Etudiant::with('projet.encadrant')->get();
+        $projets     = $this->canonicalProjects();
         $enseignants = Enseignant::all();
+        $etudiants   = Etudiant::all(); // ← add this
         $snapshots   = AffectationSnapshot::latest()->get();
         $hasSnapshot = AffectationSnapshot::exists();
 
-        return view('affectation.index', compact('etudiants', 'enseignants', 'snapshots', 'hasSnapshot'));
+        return view('affectation.index', compact('projets', 'enseignants', 'etudiants', 'snapshots', 'hasSnapshot'));
     }
 
     public function runAffectation()
     {
-        // Wipe previous affectation so re-running always starts fresh
-        Projet::query()->delete();
+        // Re-run only the encadrant assignment. Imported binomes live in one
+        // Projet row, so deleting projects would split them into orphan solos.
+        Projet::query()->update(['encadrant_id' => null]);
         AffectationSnapshot::query()->delete();
 
         $this->assignmentService->assignStudentsToEncadrants();
 
-        $etudiants = Etudiant::with('projet.encadrant')->get();
-        $data = $etudiants->map(function ($e) {
-            // Use centralized PdfExportService color logic (UML: applyFiliereColor)
-            $bg = $this->pdfExportService->applyFiliereColor($e->filiere ?? '');
+        $projets = $this->canonicalProjects();
+        $data = $projets->map(function ($p) {
+            $e1 = $p->etudiant;
+            $e2 = $p->etudiant2;
+            $bg = $this->pdfExportService->applyFiliereColor($e1->filiere ?? '');
+
             return [
-                'etu_nom'    => $e->nom,
-                'etu_prenom' => $e->prenom,
-                'etudiant'   => $e->nom . ' ' . $e->prenom,
-                'filiere'    => $e->filiere,
-                'bg'         => $bg,
-                'encadrant'  => $e->projet?->encadrant
-                    ? ($e->projet->encadrant->nom . ' ' . $e->projet->encadrant->prenom)
+                'etu_nom'        => $e1?->nom,
+                'etu_prenom'     => $e1?->prenom,
+                'etudiant'       => $e1 ? ($e1->nom . ' ' . $e1->prenom) : '',
+                'etu2_nom'       => $e2?->nom,
+                'etu2_prenom'    => $e2?->prenom,
+                'etudiant2'      => $e2 ? ($e2->nom . ' ' . $e2->prenom) : '',
+                'filiere'        => $e1?->filiere,
+                'bg'             => $bg,
+                'encadrant'      => $p->encadrant
+                    ? ($p->encadrant->nom . ' ' . $p->encadrant->prenom)
                     : 'Non assigné',
-                'enc_nom'    => $e->projet?->encadrant?->nom   ?? '',
-                'enc_prenom' => $e->projet?->encadrant?->prenom ?? '',
+                'enc_nom'        => $p->encadrant?->nom   ?? '',
+                'enc_prenom'     => $p->encadrant?->prenom ?? '',
             ];
         })->values()->toArray();
+
+        $etudiantsCount = $projets->sum(fn($p) => 1 + ($p->etudiant2_id ? 1 : 0));
 
         AffectationSnapshot::create([
             'label'           => 'Affectation du ' . now()->format('d/m/Y à H:i'),
             'data'            => $data,
-            'etudiants_count' => count($data),
+            'etudiants_count' => $etudiantsCount,
         ]);
 
         return redirect()->route('affectation.index')
-            ->with('success', count($data) . ' étudiants affectés avec succès.');
+            ->with('success', $etudiantsCount . ' étudiants affectés avec succès.');
     }
 
     public function affectationHistory()
@@ -146,6 +155,7 @@ class AssignmentController extends Controller
             // Build and save snapshot
             $soutenances = Soutenance::with([
                 'projet.etudiant',
+                'projet.etudiant2',
                 'projet.encadrant',
                 'jury.enseignants',
                 'creneau',
@@ -157,11 +167,13 @@ class AssignmentController extends Controller
                 $rapporteurs = $jury->where('pivot.role', 'Rapporteur');
 
                 return [
-                    'id'           => $s->id,
-                    'etudiant_nom' => $s->projet?->etudiant?->nom,
-                    'etudiant_prenom' => $s->projet?->etudiant?->prenom,
-                    'titre'        => $s->projet?->titre,
-                    'filiere'      => $s->projet?->etudiant?->filiere,
+                    'id'               => $s->id,
+                    'etudiant_nom'     => $s->projet?->etudiant?->nom,
+                    'etudiant_prenom'  => $s->projet?->etudiant?->prenom,
+                    'etudiant2_nom'    => $s->projet?->etudiant2?->nom,
+                    'etudiant2_prenom' => $s->projet?->etudiant2?->prenom,
+                    'titre'            => $s->projet?->sujet ?? $s->projet?->titre,
+                    'filiere'          => $s->projet?->etudiant?->filiere,
                     'encadrant'    => $s->projet?->encadrant
                         ? ('Dr. ' . $s->projet->encadrant->nom . ' ' . $s->projet->encadrant->prenom)
                         : 'N/A',
@@ -180,16 +192,18 @@ class AssignmentController extends Controller
                 ['heure_debut', 'asc'],
             ])->values()->toArray();
 
-            // Total students
+            // Total scheduled students, not soutenances. A binome has one
+            // Soutenance but both etudiant_id and etudiant2_id are scheduled.
             $totalEtudiants = Etudiant::count();
-            $affectes       = $soutenances->count();
-            $nonAffectes    = $totalEtudiants - $affectes;
+            $scheduledIds   = $this->scheduledStudentIds();
+            $affectes       = count($scheduledIds);
+            $nonAffectes    = max(0, $totalEtudiants - $affectes);
             $pct = $totalEtudiants > 0 ? round(($affectes / $totalEtudiants) * 100) : 0;
 
             PlanningSnapshot::create([
                 'label'             => 'Planning du ' . now()->format('d/m/Y à H:i'),
                 'data'              => $data,
-                'soutenances_count' => $affectes,
+                'soutenances_count' => $soutenances->count(),
             ]);
 
             if ($pct < 100) {
@@ -199,8 +213,9 @@ class AssignmentController extends Controller
                 $nbCreneauxParJour = 7; // 09-12 + 14-18
                 $capaciteMax      = $nbDates * $nbCreneauxParJour * $nbSalles;
 
-                // Find which students were not scheduled
-                $etudiantsNonAffectes = Etudiant::whereDoesntHave('projet.soutenance')->get();
+                // Conformite must inspect both project student columns because
+                // etudiant2 shares the same Projet/Soutenance/Jury as etudiant_id.
+                $etudiantsNonAffectes = Etudiant::whereNotIn('id', $scheduledIds)->get();
 
                 $diagnostic = [
                     'pct'               => $pct,
@@ -211,14 +226,18 @@ class AssignmentController extends Controller
                     'nb_dates'          => $nbDates,
                     'capacite_max'      => $capaciteMax,
                     'manque_capacite'   => max(0, $totalEtudiants - $capaciteMax),
-                    'etudiants_manquants' => $etudiantsNonAffectes->map(fn($e) => [
-                        'nom'     => $e->nom,
-                        'prenom'  => $e->prenom,
-                        'filiere' => $e->filiere,
-                        'encadrant' => $e->projet?->encadrant
-                            ? ($e->projet->encadrant->nom . ' ' . $e->projet->encadrant->prenom)
-                            : 'Non assigné',
-                    ])->toArray(),
+                    'etudiants_manquants' => $etudiantsNonAffectes->map(function ($e) {
+                        $projet = $this->projectForStudent($e);
+
+                        return [
+                            'nom'     => $e->nom,
+                            'prenom'  => $e->prenom,
+                            'filiere' => $e->filiere,
+                            'encadrant' => $projet?->encadrant
+                                ? ($projet->encadrant->nom . ' ' . $projet->encadrant->prenom)
+                                : 'Non assigné',
+                        ];
+                    })->toArray(),
                 ];
 
                 session(['conformite_diagnostic' => $diagnostic]);
@@ -233,7 +252,6 @@ class AssignmentController extends Controller
 
             return redirect()->route('planning.results')
                 ->with('success', "✓ {$pct}% des étudiants affectés. Aucun conflit d'horaire détecté.");
-
         } catch (\Exception $e) {
             return redirect()->route('affectation.index')
                 ->with('error', 'Erreur lors de la génération : ' . $e->getMessage());
@@ -286,5 +304,34 @@ class AssignmentController extends Controller
         }
 
         abort(404);
+    }
+
+    private function canonicalProjects()
+    {
+        $coveredAsEtudiant2 = Projet::whereNotNull('etudiant2_id')
+            ->pluck('etudiant2_id')
+            ->unique()
+            ->values()
+            ->toArray();
+
+        return Projet::with(['etudiant', 'etudiant2', 'encadrant'])
+            ->whereNotIn('etudiant_id', $coveredAsEtudiant2)
+            ->get();
+    }
+
+    private function scheduledStudentIds(): array
+    {
+        return Projet::whereHas('soutenance')
+            ->get()
+            ->flatMap(fn($p) => array_filter([$p->etudiant_id, $p->etudiant2_id]))
+            ->unique()
+            ->values()
+            ->toArray();
+    }
+
+    private function projectForStudent(Etudiant $etudiant): ?Projet
+    {
+        return Projet::with('encadrant')->where('etudiant2_id', $etudiant->id)->first()
+            ?? Projet::with('encadrant')->where('etudiant_id', $etudiant->id)->first();
     }
 }

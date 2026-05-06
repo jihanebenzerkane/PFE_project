@@ -145,6 +145,8 @@
                         $etu[] = [
                             'nom'    => $names[$k]['etu_nom']    ?? '',
                             'prenom' => $names[$k]['etu_prenom'] ?? '',
+                            'nom2'    => $names[$k]['etu2_nom']    ?? '',
+                            'prenom2' => $names[$k]['etu2_prenom'] ?? '',
                             'bg'     => $names[$k]['bg']         ?? '#ffffff',
                         ];
                     }
@@ -155,8 +157,18 @@
                         <td class="data-cell" rowspan="{{ count($chunks) }}" style="background-color:#ffffff;">{{ $encPrenom }}</td>
                     @endif
                     @for($k = 0; $k < 4; $k++)
-                        <td class="data-cell" style="background-color:{{ $etu[$k]['bg'] }};">{{ strtoupper($etu[$k]['nom']) }}</td>
-                        <td class="data-cell" style="background-color:{{ $etu[$k]['bg'] }};">{{ $etu[$k]['prenom'] }}</td>
+                        <td class="data-cell" style="background-color:{{ $etu[$k]['bg'] }};">
+                            {{ strtoupper($etu[$k]['nom']) }}
+                            @if(!empty($etu[$k]['nom2']))
+                                <br>{{ strtoupper($etu[$k]['nom2']) }}
+                            @endif
+                        </td>
+                        <td class="data-cell" style="background-color:{{ $etu[$k]['bg'] }};">
+                            {{ $etu[$k]['prenom'] }}
+                            @if(!empty($etu[$k]['prenom2']))
+                                <br>{{ $etu[$k]['prenom2'] }}
+                            @endif
+                        </td>
                     @endfor
                 </tr>
             @endforeach

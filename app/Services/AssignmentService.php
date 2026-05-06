@@ -33,22 +33,38 @@ class AssignmentService
         $total = $enseignants->count();
         $index = 0;
 
-        $etudiants = Etudiant::with('projet')->get();
+        // 1. Ensure every student is attached to a project (fallback if manually added without one)
+        $etudiants = Etudiant::all();
+        $projets = Projet::all();
+
+        // A binome is stored as ONE Projet row. The second student must be
+        // treated as already assigned, otherwise the fallback below would
+        // create an orphan solo Projet for that same student.
+        $assignedEtudiantIds = $projets
+            ->flatMap(fn($p) => [$p->etudiant_id, $p->etudiant2_id])
+            ->filter()
+            ->unique()
+            ->values();
 
         foreach ($etudiants as $etudiant) {
-            $projet = $etudiant->projet;
-
-            if (!$projet) {
+            if (!$assignedEtudiantIds->contains($etudiant->id)) {
                 Projet::create([
                     'titre'        => 'Projet PFE - ' . $etudiant->nom . ' ' . $etudiant->prenom,
                     'etudiant_id'  => $etudiant->id,
                     'encadrant_id' => $enseignants[$index % $total]->id,
                 ]);
                 $index++;
-            } elseif (!$projet->encadrant_id) {
-                $projet->update(['encadrant_id' => $enseignants[$index % $total]->id]);
-                $index++;
             }
+        }
+
+        // 2. Assign encadrants to all projects that don't have one yet
+        $coveredAsEtudiant2 = $projets->pluck('etudiant2_id')->filter()->unique()->values()->toArray();
+        $projetsSansEncadrant = Projet::whereNull('encadrant_id')
+            ->whereNotIn('etudiant_id', $coveredAsEtudiant2)
+            ->get();
+        foreach ($projetsSansEncadrant as $projet) {
+            $projet->update(['encadrant_id' => $enseignants[$index % $total]->id]);
+            $index++;
         }
     }
 
@@ -102,8 +118,18 @@ class AssignmentService
     {
         $creneaux = $this->creneauRepo->findAll();
 
+        // Legacy orphan guard: if a student appears as etudiant2 in a binome
+        // project, any separate Projet where they are etudiant_id must not be
+        // scheduled. The binome shares one Projet, one Soutenance and one Jury.
+        $coveredAsEtudiant2 = Projet::whereNotNull('etudiant2_id')
+            ->pluck('etudiant2_id')
+            ->unique()
+            ->values()
+            ->toArray();
+
         $projets = Projet::whereNotNull('encadrant_id')
             ->whereDoesntHave('soutenance')
+            ->whereNotIn('etudiant_id', $coveredAsEtudiant2)
             ->with('etudiant')
             ->get();
 
@@ -125,6 +151,8 @@ class AssignmentService
 
         // Interleave: GI[0], TDIA[0], ID[0], GI[1], TDIA[1], ID[1], …
         $queues  = array_values(array_filter($filiereMap, fn($q) => count($q) > 0));
+        if (empty($queues)) return;
+
         $maxLen  = max(array_map('count', $queues));
         $ordered = [];
         for ($i = 0; $i < $maxLen; $i++) {
@@ -226,7 +254,7 @@ class AssignmentService
             $eId = $s->projet?->encadrant_id;
             if ($eId && $cId) {
                 $slotOccupiedExact[$cId][$eId] = true;
-                
+
                 // Pre-fill adjacent for existing encadrants
                 $currentStart = strtotime($s->creneau->heure_debut);
                 $currentDate = $s->creneau->date->format('Y-m-d');

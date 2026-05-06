@@ -15,8 +15,7 @@ return new class extends Migration
             $table->id();
             $table->string('nom');
             $table->string('prenom');
-            $table->string('specialite');
-            $table->json('disponibilite')->nullable();
+            $table->string('specialite');            
             $table->timestamps();
         });
     }
