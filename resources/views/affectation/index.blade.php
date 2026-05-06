@@ -2,46 +2,74 @@
 
 @section('title', 'Affectation des Encadrants')
 
-@push('styles')
+@push('scripts')
 <style>
-    .page-layout { display: grid; grid-template-columns: 220px 1fr; gap: 20px; }
-
-    /* Left: Professor list */
-    .prof-panel { background: white; border-radius: 14px; padding: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); height: fit-content; }
-    .prof-panel h3 { font-size: 0.85rem; font-weight: 700; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 14px; }
-    .prof-item { padding: 9px 10px; border-radius: 8px; font-size: 0.85rem; color: #334155; display: flex; align-items: center; gap: 8px; }
-    .prof-item:hover { background: #F8FAFC; }
-    .prof-avatar { width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg, #6366F1, #3B82F6); color: white; font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-
-    /* Table */
-    .data-table { width: 100%; border-collapse: collapse; }
-    .data-table thead th { text-align: left; font-size: 0.75rem; font-weight: 600; color: #64748B; padding: 10px 14px; border-bottom: 2px solid #F1F5F9; text-transform: uppercase; letter-spacing: 0.5px; background: #FAFBFC; }
-    .data-table tbody td { padding: 12px 14px; font-size: 0.875rem; border-bottom: 1px solid #F8FAFC; vertical-align: middle; }
-    .data-table tbody tr:hover { background: #FAFBFC; }
-    .data-table tbody tr:last-child td { border-bottom: none; }
-
-    .badge { padding: 3px 10px; border-radius: 999px; font-size: 0.73rem; font-weight: 600; display: inline-block; }
-    .badge-tdia   { background: #F5F3FF; color: #6D28D9; }
-    .badge-gi     { background: #EFF6FF; color: #1D4ED8; }
-    .badge-id     { background: #ECFDF5; color: #065F46; }
-    .badge-other  { background: #F1F5F9; color: #475569; }
-    .badge-none   { background: #FEF2F2; color: #991B1B; }
-    .badge-ok     { background: #ECFDF5; color: #065F46; }
-
-    .student-name { font-weight: 600; color: #0F172A; }
-    .student-sub  { font-size: 0.78rem; color: #94A3B8; margin-top: 2px; }
-
-    /* Top action bar */
-    .action-topbar {
-        background: white; border-radius: 14px; padding: 16px 20px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-        display: flex; align-items: center; justify-content: space-between;
-        margin-bottom: 18px; flex-wrap: wrap; gap: 12px;
+    #planningModal {
+        display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45);
+        z-index:9999; align-items:center; justify-content:center;
     }
-    .action-topbar-title { font-weight: 700; color: #0F172A; font-size: 1rem; }
-    .action-topbar-sub   { font-size: 0.8rem; color: #64748B; margin-top: 2px; }
-    .action-topbar-btns  { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .modal-box {
+        background:#fff; border-radius:16px; padding:28px 32px; width:460px;
+        max-width:95vw; box-shadow:0 20px 60px rgba(0,0,0,0.2);
+    }
+    .modal-box h3 { font-size:1.05rem; font-weight:700; color:#0F172A; margin:0 0 6px; }
+    .modal-box p  { font-size:0.82rem; color:#64748B; margin:0 0 18px; }
+    .modal-footer { display:flex; gap:10px; justify-content:flex-end; }
+    .info-box {
+        background:#EFF6FF; border:1px solid #BFDBFE; border-radius:10px;
+        padding:12px 14px; margin-bottom:18px; font-size:0.82rem; color:#1D4ED8;
+    }
+    .info-box ul { margin:6px 0 0 14px; padding:0; }
+    .info-box ul li { margin-bottom:3px; }
+    .date-input-wrapper { display:flex; flex-direction:column; gap:6px; margin-bottom:20px; }
+    .date-input-wrapper label { font-size:0.82rem; font-weight:600; color:#374151; }
+    .date-input-wrapper input[type=date] {
+        padding:10px 14px; border:1.5px solid #E2E8F0; border-radius:8px;
+        font-size:0.875rem; color:#0F172A; width:100%;
+    }
+    .date-input-wrapper input[type=date]:focus {
+        outline:none; border-color:#3B82F6;
+        box-shadow:0 0 0 3px rgba(59,130,246,0.1);
+    }
 </style>
+
+<div id="planningModal">
+    <div class="modal-box">
+        <h3>📅 Date de début des soutenances</h3>
+        <p>Entrez uniquement la date de début. Le programme calculera automatiquement le nombre de jours nécessaires.</p>
+
+        <div class="info-box">
+            ℹ️ Le programme va automatiquement :
+            <ul>
+                <li>Calculer le nombre de jours nécessaires</li>
+                <li>Créer 4 créneaux par jour : 09h, 11h, 14h, 16h</li>
+                <li>Respecter la pause de 1h entre chaque soutenance</li>
+                <li>Sauter les weekends automatiquement</li>
+            </ul>
+        </div>
+
+        <form action="{{ route('planning.run') }}" method="POST" id="planningForm">
+            @csrf
+            <div class="date-input-wrapper">
+                <label for="date_debut">📆 Date de début</label>
+                <input
+                    type="date"
+                    id="date_debut"
+                    name="date_debut"
+                    required
+                    min="{{ date('Y-m-d') }}"
+                >
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline btn-sm"
+                    onclick="document.getElementById('planningModal').style.display='none'">
+                    Annuler
+                </button>
+                <button type="submit" class="btn btn-success">▶ Générer</button>
+            </div>
+        </form>
+    </div>
+</div>
 @endpush
 
 @section('content')

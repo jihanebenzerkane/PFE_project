@@ -6,6 +6,7 @@ use App\Models\Creneau;
 use App\Models\Soutenance;
 use App\Models\Enseignant;
 use App\Models\Jury;
+use Carbon\Carbon;
 
 class ConstraintValidator
 {
@@ -20,7 +21,8 @@ class ConstraintValidator
             && $this->validateNoConflict($ensId, $creneauId)
             && $this->validateQuotas($ensId)
             && $this->validateJuryComposition($jury)
-            && $this->validateDailyBalance($ensId, $creneauId);
+            && $this->validateDailyBalance($ensId, $creneauId)
+            && $this->validateBreakTime($ensId, $creneauId);
     }
 
     // Règle 1 : la salle est-elle libre dans ce créneau ?
@@ -108,5 +110,60 @@ class ConstraintValidator
         $total = $nbEncadrant + $nbJury;
 
         return $total < 4;
+    }
+
+    // Règle 6 : pause obligatoire d'1h après chaque soutenance pour un même enseignant.
+    //
+    // Chaque soutenance dure 1 heure. Les soutenances ont lieu uniquement :
+    //   - Le matin   : 09:00 → 12:00  (créneaux : 9h-10h, 10h-11h, 11h-12h)
+    //   - L'après-M  : 14:00 → 18:00  (créneaux : 14h-15h, 15h-16h, 16h-17h, 17h-18h)
+    //
+    // Règle : entre deux créneaux où un enseignant intervient,
+    //         le gap doit être ≥ 60 minutes.
+    //
+    // Exemples :
+    //   Occupé 9h-10h  → Proposé 10h-11h : gap =  0 min → ❌ REFUSÉ
+    //   Occupé 9h-10h  → Proposé 11h-12h : gap = 60 min → ✅ OK
+    //   Occupé 11h-12h → Proposé 14h-15h : gap = 120 min → ✅ OK (pause naturelle 12h-14h)
+    public function validateBreakTime(int $ensId, int $creneauId): bool
+    {
+        $creneau      = Creneau::find($creneauId);
+        $date         = $creneau->date->toDateString();
+        $debutPropose = Carbon::parse($date . ' ' . $creneau->heure_debut->format('H:i'));
+        $finProposee  = Carbon::parse($date . ' ' . $creneau->heure_fin->format('H:i'));
+
+        // Récupère tous les créneaux du même jour où l'enseignant est déjà impliqué
+        // (comme encadrant OU comme juré), sauf le créneau en cours d'évaluation.
+        $creneauxOccupes = Creneau::where('date', $date)
+            ->where('id', '!=', $creneauId)
+            ->where(function ($query) use ($ensId) {
+                $query
+                    ->whereHas('soutenances', fn($q) => $q->where('encadrant_id', $ensId))
+                    ->orWhereHas('soutenances', fn($q) =>
+                        $q->whereHas('jury.enseignants', fn($q2) =>
+                            $q2->where('enseignant_id', $ensId)
+                        )
+                    );
+            })
+            ->get(['heure_debut', 'heure_fin']);
+
+        foreach ($creneauxOccupes as $occupe) {
+            $debutOccupe = Carbon::parse($date . ' ' . $occupe->heure_debut->format('H:i'));
+            $finOccupe   = Carbon::parse($date . ' ' . $occupe->heure_fin->format('H:i'));
+
+            // Le créneau occupé est AVANT le créneau proposé
+            // → gap = debutPropose - finOccupe, doit être >= 60 min
+            if ($finOccupe->lte($debutPropose) && $finOccupe->diffInMinutes($debutPropose) < 60) {
+                return false;
+            }
+
+            // Le créneau proposé est AVANT le créneau occupé
+            // → gap = debutOccupe - finProposee, doit être >= 60 min
+            if ($finProposee->lte($debutOccupe) && $finProposee->diffInMinutes($debutOccupe) < 60) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
