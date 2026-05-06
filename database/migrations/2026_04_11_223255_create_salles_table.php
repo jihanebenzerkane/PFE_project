@@ -11,10 +11,7 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('salles', function (Blueprint $table) {
-            $table->id();
-            $table->timestamps();
-        });
+        // Superseded by 2026_04_10_160615_create_salles_table.php — no-op.
     }
 
     /**

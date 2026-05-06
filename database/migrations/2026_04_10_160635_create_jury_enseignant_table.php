@@ -11,13 +11,8 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('jury_enseignant', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('jury_id')->constrained('jurys')->onDelete('cascade');
-            $table->foreignId('enseignant_id')->constrained('enseignants')->onDelete('cascade');
-            $table->string('role');
-            $table->timestamps();
-    });
+        // Superseded by 2026_05_05_023951_create_jury_enseignant_table.php
+        // which runs after enseignants exists. This migration is a no-op.
     }
 
     /**

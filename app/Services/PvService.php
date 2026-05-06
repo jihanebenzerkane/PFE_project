@@ -2,20 +2,20 @@
 
 namespace App\Services;
 
-use App\Repositories\SoutenanceDAO;
-use App\Repositories\EnseignantDAO;
+use App\Repositories\SoutenanceRepository;
+use App\Repositories\EnseignantRepository;
 use App\Models\Soutenance;
 
 class PvService
 {
 
-    protected SoutenanceDAO $soutenanceDAO;
-    protected EnseignantDAO $enseignantDAO;
+    protected SoutenanceRepository $soutenanceRepository;
+    protected EnseignantRepository $enseignantRepository;
 
-    public function __construct(SoutenanceDAO $soutenanceDAO, EnseignantDAO $enseignantDAO)
+    public function __construct(SoutenanceRepository $soutenanceRepository, EnseignantRepository $enseignantRepository)
     {
-        $this->soutenanceDAO = $soutenanceDAO;
-        $this->enseignantDAO = $enseignantDAO;
+        $this->soutenanceRepository = $soutenanceRepository;
+        $this->enseignantRepository = $enseignantRepository;
     }
 
 
@@ -78,7 +78,7 @@ class PvService
 
     public function organizePvsByTeacher()
     {
-        $profs = $this->enseignantDAO->findAll();
+        $profs = $this->enseignantRepository->findAll();
 
         foreach ($profs as $prof) {
             $nom = $prof->nom;

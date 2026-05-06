@@ -1,0 +1,1 @@
+<?php require 'vendor/autoload.php'; $app = require_once 'bootstrap/app.php'; $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class); $kernel->bootstrap(); $v = new App\Services\AssignmentService(app(App\Repositories\CreneauRepository::class), app(App\Repositories\SoutenanceRepository::class)); $v->runAssignment(); $v->buildJuries(); 

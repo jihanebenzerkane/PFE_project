@@ -11,14 +11,7 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('creneaux', function (Blueprint $table) {
-            $table->id();
-            $table->date('date');
-            $table->time('heure_debut');
-            $table->time('heure_fin');
-            $table->integer('capacite')->default(5);
-            $table->timestamps();
-        });
+        // Superseded by 2026_05_04_210000_create_creneaux_table.php
     }
 
     /**

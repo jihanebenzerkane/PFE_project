@@ -3,39 +3,37 @@
 namespace App\Http\Controllers;
 
 use App\Models\Salle;
-use App\Repositories\SalleDAO;
+use App\Repositories\SalleRepository;
 use Illuminate\Http\Request;
 
 class SalleController extends Controller
 {
     public function __construct(
-        private SalleDAO $salleDAO
+        private SalleRepository $salleRepository
     ) {}
 
     public function index()
     {
-        $salles = $this->salleDAO->findAll();
+        $salles = $this->salleRepository->findAll();
         return view('salles.index', compact('salles'));
     }
 
     public function store(Request $request)
     {
         $request->validate([
-            'nom'      => 'required|string|max:50',
-            'capacite' => 'required|integer|min:1',
+            'nom' => 'required|string|max:50',
         ]);
 
         $salle = new Salle();
         $salle->nom      = $request->nom;
-        $salle->capacite = $request->capacite;
-        $this->salleDAO->save($salle);
+        $this->salleRepository->save($salle);
 
-        return redirect()->route('salles.index');
+        return redirect()->back()->with('success', "Salle {$salle->nom} ajoutée.");
     }
 
     public function destroy(int $id)
     {
-        $this->salleDAO->delete($id);
-        return redirect()->route('salles.index');
+        $this->salleRepository->delete($id);
+        return redirect()->back()->with('success', 'Salle supprimée.');
     }
 }

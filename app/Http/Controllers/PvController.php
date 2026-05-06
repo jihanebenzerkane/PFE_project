@@ -6,23 +6,23 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 
 use App\Services\PvService;
-use App\Repositories\SoutenanceDAO;
+use App\Repositories\SoutenanceRepository;
 
 class PvController extends Controller
 {
     protected PvService $pvService;
-    protected SoutenanceDAO $soutenanceDAO;
+    protected SoutenanceRepository $soutenanceRepository;
 
-    public function __construct(PvService $pvService, SoutenanceDAO $soutenanceDAO)
+    public function __construct(PvService $pvService, SoutenanceRepository $soutenanceRepository)
     {
         $this->pvService = $pvService;
-        $this->soutenanceDAO = $soutenanceDAO;
+        $this->soutenanceRepository = $soutenanceRepository;
     }
 
     public function index()
     {
         // 1. Fetch all soutenances (Eager loaded for performance!)
-        $soutenances = $this->soutenanceDAO->findAll();
+        $soutenances = $this->soutenanceRepository->findAll();
         
         // 2. Return the HTML Blade View
         return view('pvs.index', compact('soutenances'));
@@ -36,7 +36,7 @@ class PvController extends Controller
 
     public function downloadSinglePv($id)
     {
-        $soutenance = $this->soutenanceDAO->findById($id);
+        $soutenance = $this->soutenanceRepository->findById($id);
         $savePath = $this->pvService->generatePvForStudent($soutenance);
         return response()->download($savePath)->deleteFileAfterSend(true);
     }

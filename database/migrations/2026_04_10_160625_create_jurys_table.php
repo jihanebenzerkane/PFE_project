@@ -11,10 +11,7 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('jurys', function (Blueprint $table) {
-            $table->id();
-            $table->timestamps();
-        });
+        // Superseded by 2026_05_04_220947_create_juries_table.php
     }
 
     /**

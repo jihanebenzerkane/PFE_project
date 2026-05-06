@@ -11,16 +11,7 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('soutenances', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('etudiant_id')->constrained('etudiants');
-            $table->foreignId('encadrant_id')->constrained('encadrants');
-            $table->foreignId('jury_id')->constrained('enseignants');
-            $table->foreignId('salle_id')->constrained('salles');
-            $table->foreignId('creneau_id')->constrained('creneaux');
-            $table->enum('langue', ['FR', 'EN'])->default('FR');
-            $table->timestamps();
-        });
+        // Superseded by 2026_05_05_023950_create_soutenances_table.php
     }
 
     /**

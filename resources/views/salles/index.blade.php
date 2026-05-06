@@ -123,12 +123,7 @@
     </button>
 </div>
 
-{{-- SUCCESS MESSAGE --}}
-@if(session('success'))
-    <div style="background:#D1FAE5; color:#065F46; padding:12px 18px; border-radius:8px; margin-bottom:20px; font-weight:500;">
-        ✅ {{ session('success') }}
-    </div>
-@endif
+
 
 {{-- SALLES GRID --}}
 <div class="salle-grid">
@@ -136,9 +131,6 @@
         <div class="salle-card">
             <div>
                 <div class="salle-name">🏛️ {{ $salle->nom }}</div>
-                <div style="margin-top:6px;">
-                    <span class="salle-capacity">👥 {{ $salle->capacite }} personnes</span>
-                </div>
             </div>
             <form action="{{ route('salles.destroy', $salle->id) }}" method="POST"
                   onsubmit="return confirm('Supprimer {{ $salle->nom }} ?')">
@@ -168,14 +160,7 @@
                     <div class="error-message">{{ $message }}</div>
                 @enderror
             </div>
-            <div class="form-group">
-                <label>Capacité (nombre de personnes)</label>
-                <input type="number" name="capacite" placeholder="ex: 30"
-                       value="{{ old('capacite') }}" min="1">
-                @error('capacite')
-                    <div class="error-message">{{ $message }}</div>
-                @enderror
-            </div>
+
             <div class="modal-footer">
                 <button type="button" class="btn-cancel" onclick="closeModal()">Annuler</button>
                 <button type="submit" class="btn btn-red">Enregistrer</button>

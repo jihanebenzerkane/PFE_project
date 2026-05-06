@@ -5,40 +5,57 @@ use App\Http\Controllers\PvController;
 use App\Http\Controllers\ImportController;
 use App\Http\Controllers\AssignmentController;
 use App\Http\Controllers\SalleController;
-use App\Http\Controllers\JuryController;
 use App\Http\Controllers\ExportController;
+use App\Http\Controllers\VerificationController;
+use App\Http\Controllers\ConformiteController;
 
-Route::get('/', function () {
-    return view('welcome');
-});
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+Route::get('/', [AssignmentController::class, 'dashboard'])->name('dashboard');
 
-Route::get('/generation-pvs', function () {
-    return view('pvs.intro');
-})->name('pv.intro');
+// ─── Import ───────────────────────────────────────────────────────────────────
+Route::get('/import', [ImportController::class, 'showForm'])->name('import.form');
+Route::post('/import/master', [ImportController::class, 'importMaster'])->name('import.master');
+Route::post('/import/etudiants', [ImportController::class, 'importEtudiants'])->name('import.etudiants');
+Route::post('/import/profs', [ImportController::class, 'importProfs'])->name('import.profs');
 
-// PV Generation Routes (Maroua)
+// ─── Affectation des Encadrants ───────────────────────────────────────────────
+Route::get('/affectation', [AssignmentController::class, 'showAffectation'])->name('affectation.index');
+Route::post('/affectation/run', [AssignmentController::class, 'runAffectation'])->name('affectation.run');
+Route::get('/affectation/history', [AssignmentController::class, 'affectationHistory'])->name('affectation.history');
+
+// ─── Planning des Soutenances ─────────────────────────────────────────────────
+Route::post('/planning/run', [AssignmentController::class, 'runAlgorithm'])->name('planning.run');
+Route::get('/planning/results', [AssignmentController::class, 'showResults'])->name('planning.results');
+Route::get('/planning/history', [AssignmentController::class, 'planningHistory'])->name('planning.history');
+// Legacy redirect
+Route::get('/planning', fn() => redirect()->route('planning.results'))->name('planning.index');
+
+// ─── Snapshot Downloads ───────────────────────────────────────────────────────
+Route::get('/snapshot/{type}/{id}/{format}', [AssignmentController::class, 'downloadSnapshot'])
+    ->name('snapshot.download')
+    ->where(['type' => 'affectation|planning', 'format' => 'pdf|word']);
+
+// ─── Exports (current live data) ──────────────────────────────────────────────
+Route::get('/export/planning/pdf', [ExportController::class, 'downloadPlanning'])->name('export.planning');
+Route::get('/export/planning/word', [ExportController::class, 'downloadPlanningWord'])->name('export.planning.word');
+Route::get('/export/affectation/pdf', [ExportController::class, 'downloadAffectation'])->name('export.affectation');
+Route::get('/export/affectation/word', [ExportController::class, 'downloadAffectationWord'])->name('export.affectation.word');
+Route::get('/export/supervision', [ExportController::class, 'downloadSupervision'])->name('export.supervision');
+
+// ─── PV Generation ────────────────────────────────────────────────────────────
+Route::get('/generation-pvs', fn() => view('pvs.intro'))->name('pv.intro');
 Route::get('/pv', [PvController::class, 'index'])->name('pv.index');
 Route::get('/pv/download/{id}', [PvController::class, 'downloadSinglePv'])->name('pv.download');
 Route::get('/pv/archive/download-all', [PvController::class, 'downloadPvsArchive'])->name('pv.downloadAll');
 
-// Excel Import Routes (Jihane)
-Route::get('/import', [ImportController::class, 'showForm'])->name('import.form');
-Route::post('/import', [ImportController::class, 'import'])->name('import.store');
-
-// Planning Algorithm Routes (Maroua)
-Route::get('/planning', [AssignmentController::class, 'showPlanning'])->name('planning.index');
-Route::post('/algorithm/run', [AssignmentController::class, 'runAlgorithm'])->name('algorithm.run');
-
-// Salle Routes (Fati)
+// ─── Salles ───────────────────────────────────────────────────────────────────
 Route::get('/salles', [SalleController::class, 'index'])->name('salles.index');
 Route::post('/salles', [SalleController::class, 'store'])->name('salles.store');
 Route::delete('/salles/{id}', [SalleController::class, 'destroy'])->name('salles.destroy');
 
-// Jury Routes (Fati)
-Route::get('/jurys', [JuryController::class, 'index'])->name('jurys.index');
-Route::post('/jurys', [JuryController::class, 'store'])->name('jurys.store');
-Route::get('/jurys/{id}/pv', [JuryController::class, 'provePvId'])->name('jurys.pv');
 
-// Export Routes (Fati)
-Route::get('/export/planning', [ExportController::class, 'downloadPlanning'])->name('export.planning');
-Route::get('/export/supervision', [ExportController::class, 'downloadSupervision'])->name('export.supervision');
+// Vérification des contraintes
+Route::get('/verification', [VerificationController::class, 'index'])->name('verification.index');
+
+// Contrôle de Conformité
+Route::get('/conformite', [ConformiteController::class, 'index'])->name('conformite.index');

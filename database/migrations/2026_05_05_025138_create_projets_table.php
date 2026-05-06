@@ -11,10 +11,7 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('projets', function (Blueprint $table) {
-            $table->id();
-            $table->timestamps();
-        });
+        // Superseded by 2026_05_04_222133_create_projets_table.php
     }
 
     /**
