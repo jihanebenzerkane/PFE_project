@@ -32,17 +32,17 @@ class PvService
 
         $template->setValue('nom_etudiant', $nom . ' ' . $prenom);
 
-        $filiere = $soutenance->projet->etudiant->filiere;
+        $filiere = strtoupper(trim($soutenance->projet->etudiant->filiere ?? ''));
         $box_id = '☐';
         $box_gi = '☐';
         $box_tdia = '☐';
 
-        if ($filiere === 'Ingénierie des Données' || $filiere === 'ID') {
-            $box_id = '☑';
-        } elseif ($filiere === 'Génie Informatique' || $filiere === 'GI') {
-            $box_gi = '☑';
-        } elseif ($filiere === 'Transformation Digital & IA' || $filiere === 'TDIA') {
-            $box_tdia = '☑';
+        if (str_contains($filiere, 'TDIA') || str_contains($filiere, 'TRANSFORMATION')) {
+            $box_tdia = '☒';
+        } elseif (str_contains($filiere, 'GI') || str_contains($filiere, 'INFORMATIQUE')) {
+            $box_gi = '☒';
+        } elseif (str_contains($filiere, 'ID') || str_contains($filiere, 'DONN')) {
+            $box_id = '☒';
         }
 
         $template->setValue('box_id', $box_id);
@@ -65,9 +65,31 @@ class PvService
             $template->setValue("jury_role#{$rowNumber}", $prof->pivot->role);
         }
 
-        $date = $soutenance->creneau->date;
+        $date = optional($soutenance->creneau->date)?->format('d/m/Y');
         $template->setValue('date_soutenance', $date);
 
+        $juryMembers = collect();
+
+        // President
+        $juryMembers->push($encadrant);
+
+        // Rapporteurs
+        foreach ($rapporteurs as $rapporteur) {
+            $juryMembers->push($rapporteur);
+        }
+
+        // Fill up to 3 signatures
+        for ($i = 0; $i < 3; $i++) {
+
+            $member = $juryMembers[$i] ?? null;
+
+            $template->setValue(
+                'signature' . ($i + 1),
+                $member
+                    ? ('Pr. ' . $member->nom . ' ' . $member->prenom)
+                    : ''
+            );
+        }
         $fileName = "Fiche_Evaluation_PFE_{$nom}_{$prenom}.docx";
 
         $savePath = storage_path($customFolder . '/' . $fileName);
@@ -106,9 +128,9 @@ class PvService
         $zipFilePath = storage_path('app/public/' . $zipFileName);
 
         $zip = new \ZipArchive();
-        
+
         if ($zip->open($zipFilePath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === TRUE) {
-            
+
             $files = \Illuminate\Support\Facades\File::allFiles(storage_path('temp_pvs'));
 
             foreach ($files as $file) {
