@@ -3,101 +3,87 @@
 namespace App\Services;
 
 use App\Models\Creneau;
-use App\Models\Soutenance;
 use App\Models\Enseignant;
 use App\Models\Etudiant;
-use App\Models\Projet;
 use App\Models\Jury;
+use App\Models\Projet;
 use App\Models\Salle;
+use App\Models\Soutenance;
 use App\Repositories\CreneauRepository;
 use App\Repositories\SoutenanceRepository;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class AssignmentService
 {
+    private const MAX_PLANNING_DAYS = 4;
+
+    private const DEFAULT_ROOMS = [
+        'S4A',
+        'S5A',
+        'S16A',
+        'S17A',
+        'AMPHI A',
+    ];
+
     public function __construct(
         protected CreneauRepository $creneauRepo,
         protected SoutenanceRepository $soutenanceRepo,
     ) {}
 
-    /**
-     * STEP 1 — Assigner un encadrant à chaque étudiant qui n'en a pas.
-     */
     public function assignStudentsToEncadrants(): void
     {
-        $enseignants = Enseignant::all()->shuffle();
-        if ($enseignants->isEmpty())
+        $enseignants = Enseignant::inRandomOrder()->get();
+        if ($enseignants->isEmpty()) {
             return;
+        }
 
-        $total = $enseignants->count();
-        $index = 0;
+        $loads = $enseignants
+            ->mapWithKeys(fn(Enseignant $enseignant) => [
+                $enseignant->id => Projet::where('encadrant_id', $enseignant->id)->count(),
+            ])
+            ->toArray();
 
-        $etudiants = Etudiant::all();
         $projets = Projet::all();
-
         $assignedEtudiantIds = $projets
-            ->flatMap(fn($p) => [$p->etudiant_id, $p->etudiant2_id])
+            ->flatMap(fn(Projet $projet) => [$projet->etudiant_id, $projet->etudiant2_id])
             ->filter()
             ->unique()
             ->values();
 
-        foreach ($etudiants as $etudiant) {
-            if (!$assignedEtudiantIds->contains($etudiant->id)) {
-                Projet::create([
-                    'titre' => 'Projet PFE - ' . $etudiant->nom . ' ' . $etudiant->prenom,
-                    'etudiant_id' => $etudiant->id,
-                    'encadrant_id' => $enseignants[$index % $total]->id,
-                ]);
-                $index++;
+        foreach (Etudiant::orderBy('id')->get() as $etudiant) {
+            if ($assignedEtudiantIds->contains($etudiant->id)) {
+                continue;
             }
+
+            $encadrant = $this->leastLoadedProfessor($enseignants, $loads);
+            Projet::create([
+                'titre' => 'Projet PFE - ' . trim($etudiant->nom . ' ' . $etudiant->prenom),
+                'etudiant_id' => $etudiant->id,
+                'encadrant_id' => $encadrant->id,
+            ]);
+
+            $loads[$encadrant->id]++;
         }
 
         $coveredAsEtudiant2 = $projets->pluck('etudiant2_id')->filter()->unique()->values()->toArray();
         $projetsSansEncadrant = Projet::whereNull('encadrant_id')
             ->whereNotIn('etudiant_id', $coveredAsEtudiant2)
+            ->orderBy('id')
             ->get();
 
         foreach ($projetsSansEncadrant as $projet) {
-            $projet->update(['encadrant_id' => $enseignants[$index % $total]->id]);
-            $index++;
+            $encadrant = $this->leastLoadedProfessor($enseignants, $loads);
+            $projet->update(['encadrant_id' => $encadrant->id]);
+            $loads[$encadrant->id]++;
         }
     }
 
-    /**
-     * STEP 2 — Calculer automatiquement les jours nécessaires
-     * à partir d'une date de début entrée par l'utilisateur.
-     *
-     * Créneaux avec pause 1h intégrée :
-     *   09h (soutenance 1h) → pause 10h → 11h (soutenance 1h) → pause déjeuner → 14h → pause 15h → 16h
-     *   Soit 4 créneaux par jour : 09h, 11h, 14h, 16h
-     *
-     * Nombre de salles = dynamique depuis la base de données
-     * Pas de soutenances le weekend
-     */
     public function planifierCreneaux(string $dateDebut): void
     {
-        // 4 créneaux par jour avec pause 1h entre chaque
-        $horaires = [
-            ['debut' => '09:00', 'fin' => '10:00'],
-            ['debut' => '10:00', 'fin' => '11:00'],
-            ['debut' => '11:00', 'fin' => '12:00'],
-            ['debut' => '14:00', 'fin' => '15:00'],
-            ['debut' => '15:00', 'fin' => '16:00'],
-            ['debut' => '16:00', 'fin' => '17:00'],
-            ['debut' => '17:00', 'fin' => '18:00'],
-        ];
+        $this->ensureSallesExist();
 
-        $nbCreneauxParJour = count($horaires); // 4
-
-        // Nombre de salles réel depuis la base de données
-        $nbSallesParCreneau = Salle::count();
-        if ($nbSallesParCreneau === 0)
-            $nbSallesParCreneau = 5; // valeur par défaut
-
-        // Soutenances max par jour
-        $nbSoutenancesParJour = $nbCreneauxParJour * $nbSallesParCreneau;
-
-        // Compter le nombre de projets à soutenir
         $coveredAsEtudiant2 = Projet::whereNotNull('etudiant2_id')
             ->pluck('etudiant2_id')
             ->unique()
@@ -108,525 +94,561 @@ class AssignmentService
             ->whereNotIn('etudiant_id', $coveredAsEtudiant2)
             ->count();
 
-        if ($nbProjets === 0)
+        if ($nbProjets === 0) {
             return;
-
-        // Calculer le nombre de jours nécessaires
-        // ceil() arrondit vers le haut : 21 projets → 2 jours
-        $nbJoursNecessaires = (int) ceil($nbProjets / $nbSoutenancesParJour);
-
-        // Générer les dates en sautant les weekends
-        $dates = [];
-        $current = new \DateTime($dateDebut);
-
-        while (count($dates) < $nbJoursNecessaires) {
-            // 0 = dimanche, 6 = samedi
-            $jourSemaine = (int) $current->format('w');
-
-            if ($jourSemaine !== 0 && $jourSemaine !== 6) {
-                $dates[] = $current->format('Y-m-d');
-            }
-
-            $current->modify('+1 day');
         }
 
-        // Créer les créneaux pour chaque jour calculé
-        foreach ($dates as $date) {
-            foreach ($horaires as $h) {
-                $exists = Creneau::where('date', $date)
-                    ->where('heure_debut', $h['debut'])
-                    ->exists();
+        $capacite = $this->maxSoutenancesPerSlot();
 
-                if (!$exists) {
-                    Creneau::create([
+        foreach ($this->workingDates($dateDebut, self::MAX_PLANNING_DAYS) as $date) {
+            foreach ($this->officialSlotRanges() as $debut => $fin) {
+                Creneau::updateOrCreate(
+                    [
                         'date' => $date,
-                        'heure_debut' => $h['debut'],
-                        'heure_fin' => $h['fin'],
-                        'capacite' => $nbSallesParCreneau,
-                    ]);
-                }
+                        'heure_debut' => $debut,
+                    ],
+                    [
+                        'heure_fin' => $fin,
+                        'capacite' => $capacite,
+                    ]
+                );
             }
         }
     }
 
-    /**
-     * STEP 3 — Affecter chaque projet à un créneau + salle.
-     * Pause obligatoire de 1h après chaque soutenance pour l'encadrant.
-     */
     public function runAssignment(): void
     {
-        $creneaux = $this->creneauRepo->findAll();
+        $this->ensureSallesExist();
 
+        $slotOrder = $this->slotOrder();
+        $creneaux = $this->officialCreneaux($slotOrder);
+        $allProfessors = Enseignant::orderBy('id')->get();
+        $salles = Salle::orderBy('id')->get();
+
+        if ($allProfessors->count() < 3) {
+            Log::warning('Planning impossible: at least 3 professors are required.');
+            return;
+        }
+
+        if ($creneaux->isEmpty() || $salles->isEmpty()) {
+            Log::warning('Planning impossible: official slots or rooms are missing.', [
+                'creneaux' => $creneaux->count(),
+                'salles' => $salles->count(),
+            ]);
+            return;
+        }
+
+        $projects = $this->professorDrivenProjectOrder($this->projectsToSchedule());
+        if (empty($projects)) {
+            return;
+        }
+
+        $state = $this->buildPlanningState($allProfessors, $salles, $slotOrder);
+
+        foreach ($projects as $projet) {
+            $package = $this->findBestPackage(
+                $projet,
+                $creneaux,
+                $salles,
+                $allProfessors,
+                $state,
+                $slotOrder
+            );
+
+            if (!$package) {
+                Log::warning('Project skipped because no complete Java-style planning package is feasible.', [
+                    'projet_id' => $projet->id,
+                    'encadrant_id' => $projet->encadrant_id,
+                ]);
+                continue;
+            }
+
+            $this->persistPackage($projet, $package);
+            $this->markPackageInState($projet, $package, $state, $slotOrder);
+
+            Log::info('Soutenance created atomically with balanced professor-driven scheduling.', [
+                'projet_id' => $projet->id,
+                'creneau_id' => $package['creneau']->id,
+                'salle_id' => $package['salle']->id,
+                'president_id' => $projet->encadrant_id,
+                'rapporteur_ids' => array_map(
+                    fn(Enseignant $rapporteur) => $rapporteur->id,
+                    $package['rapporteurs']
+                ),
+            ]);
+        }
+    }
+
+    public function buildJuries(): void
+    {
+        $invalidCount = Soutenance::whereNull('jury_id')->count();
+        if ($invalidCount > 0) {
+            Log::warning('Deleting invalid soutenances without jury_id after atomic scheduling refactor.', [
+                'count' => $invalidCount,
+            ]);
+            Soutenance::whereNull('jury_id')->delete();
+        }
+
+        Jury::doesntHave('enseignants')->delete();
+    }
+
+    public function maxSoutenancesPerSlot(): int
+    {
+        $this->ensureSallesExist();
+
+        return max(1, Salle::count());
+    }
+
+    private function leastLoadedProfessor(Collection $enseignants, array $loads): Enseignant
+    {
+        $minLoad = min(array_map(
+            fn(Enseignant $enseignant) => $loads[$enseignant->id] ?? 0,
+            $enseignants->all()
+        ));
+
+        $candidates = $enseignants
+            ->filter(fn(Enseignant $enseignant) => ($loads[$enseignant->id] ?? 0) === $minLoad)
+            ->shuffle()
+            ->values();
+
+        return $candidates->first();
+    }
+
+    private function projectsToSchedule(): Collection
+    {
         $coveredAsEtudiant2 = Projet::whereNotNull('etudiant2_id')
             ->pluck('etudiant2_id')
             ->unique()
             ->values()
             ->toArray();
 
-        $projets = Projet::whereNotNull('encadrant_id')
+        return Projet::whereNotNull('encadrant_id')
             ->whereDoesntHave('soutenance')
             ->whereNotIn('etudiant_id', $coveredAsEtudiant2)
-            ->with('etudiant')
+            ->with(['etudiant', 'etudiant2', 'encadrant'])
             ->get();
-
-        // Grouper par filière pour la diversité
-        $filiereMap = ['gi' => [], 'tdia' => [], 'id' => [], 'other' => []];
-
-        foreach ($projets as $projet) {
-            $f = strtoupper($projet->etudiant?->filiere ?? '');
-            if (str_contains($f, 'TDIA') || str_contains($f, 'TRANSFORM')) {
-                $filiereMap['tdia'][] = $projet;
-            } elseif (str_contains($f, 'ING') && str_contains($f, 'DONN')) {
-                $filiereMap['id'][] = $projet;
-            } elseif (str_contains($f, 'INFORMATIQUE') || $f === 'GI') {
-                $filiereMap['gi'][] = $projet;
-            } else {
-                $filiereMap['other'][] = $projet;
-            }
-        }
-
-        // Interleaver les filières pour la diversité
-        $queues = array_values(array_filter($filiereMap, fn($q) => count($q) > 0));
-        if (empty($queues))
-            return;
-
-        $maxLen = max(array_map('count', $queues));
-        $ordered = [];
-        for ($i = 0; $i < $maxLen; $i++) {
-            foreach ($queues as $queue) {
-                if (isset($queue[$i]))
-                    $ordered[] = $queue[$i];
-            }
-        }
-
-        $perDayFiliereCount = [];
-        $totalProfs = Enseignant::count();
-        $maxPerSlot = max(1, (int) floor($totalProfs / 3) - 1);
-
-        foreach ($ordered as $projet) {
-            $filiere = strtoupper($projet->etudiant?->filiere ?? '');
-            $fShort = $this->normalizeFiliere($filiere);
-
-            $result = $this->pickCreneauAndSalle(
-                $projet->encadrant_id,
-                $creneaux,
-                $fShort,
-                $perDayFiliereCount,
-                $maxPerSlot
-            );
-            if (!$result)
-                continue;
-
-            [$creneau, $salle] = $result;
-
-            Soutenance::create([
-                'projet_id' => $projet->id,
-                'encadrant_id' => $projet->encadrant_id,
-                'creneau_id' => $creneau->id,
-                'salle_id' => $salle->id,
-                'salle' => $salle->nom,
-                'langue' => $projet->langue_soutenance ?? 'Français',
-            ]);
-
-            $day = $creneau->date->format('Y-m-d');
-            $perDayFiliereCount[$day][$fShort] = ($perDayFiliereCount[$day][$fShort] ?? 0) + 1;
-        }
     }
 
-    /**
-     * STEP 4 — Construire les jurys.
-     *
-     * Pause obligatoire de 1h POUR TOUS les enseignants
-     * (encadrant + rapporteurs) :
-     *
-     *   Soutenance à 09h → bloqué à 09h et 10h → libre à 11h ✅
-     *   Soutenance à 11h → bloqué à 11h et 12h → libre à 14h ✅
-     *   Soutenance à 14h → bloqué à 14h et 15h → libre à 16h ✅
-     *   Soutenance à 16h → bloqué à 16h et 17h → fin ✅
-     *
-     * Entre 12h et 14h : pas de soutenances → pause automatique.
-     * Jury = 1 Président (encadrant) + 2 Rapporteurs.
-     */
-    public function buildJuries(): void
+    private function professorDrivenProjectOrder(Collection $projects): array
     {
-        $soutenances = Soutenance::whereNull('jury_id')
-            ->with('projet.encadrant', 'creneau')
-            ->join('creneaux', 'soutenances.creneau_id', '=', 'creneaux.id')
-            ->orderBy('creneaux.date')
-            ->orderBy('creneaux.heure_debut')
-            ->select('soutenances.*')
-            ->get();
+        $groups = [];
 
-        if ($soutenances->isEmpty())
-            return;
-
-        $allCreneaux = Creneau::all()->keyBy('id');
-        $allProfessors = Enseignant::orderBy('nom')->orderBy('prenom')->get();
-
-        // Compteur de jurys par enseignant pour équilibrer la charge
-        $juryCount = $allProfessors
-            ->pluck('id')
-            ->flip()
-            ->map(fn() => 0)
-            ->toArray();
-
-        // Charger les comptes existants depuis jury_enseignant
-        $existingCounts = DB::table('jury_enseignant')
-            ->select('enseignant_id', DB::raw('COUNT(*) as cnt'))
-            ->groupBy('enseignant_id')
-            ->pluck('cnt', 'enseignant_id')
-            ->toArray();
-
-        foreach ($existingCounts as $profId => $cnt) {
-            $juryCount[$profId] = (int) $cnt;
+        foreach ($projects as $projet) {
+            $groups[$projet->encadrant_id][] = $projet;
         }
 
-        // Tracker les créneaux occupés en mémoire
-        // $slotOccupied[creneau_id][enseignant_id] = true
-        $slotOccupied = [];
+        foreach ($groups as &$group) {
+            usort($group, fn(Projet $a, Projet $b) => $this->compareProjects($a, $b));
+        }
+        unset($group);
 
-        // Pré-remplir avec les encadrants des soutenances existantes
-        foreach (
-            Soutenance::whereNotNull('creneau_id')
-                ->whereNotNull('encadrant_id')
-                ->get() as $s
-        ) {
-            $slotOccupied[$s->creneau_id][$s->encadrant_id] = true;
+        uasort($groups, function (array $a, array $b) {
+            $encadrantA = $a[0]->encadrant_id ?? 0;
+            $encadrantB = $b[0]->encadrant_id ?? 0;
+
+            return [
+                -count($a),
+                $encadrantA,
+            ] <=> [
+                -count($b),
+                $encadrantB,
+            ];
+        });
+
+        $max = empty($groups) ? 0 : max(array_map('count', $groups));
+        $ordered = [];
+
+        for ($round = 0; $round < $max; $round++) {
+            foreach ($groups as $group) {
+                if (isset($group[$round])) {
+                    $ordered[] = $group[$round];
+                }
+            }
         }
 
-        // Pré-remplir avec les rapporteurs existants
-        $existingJuryMembers = DB::table('jury_enseignant')
-            ->join('juries', 'jury_enseignant.jury_id', '=', 'juries.id')
-            ->join('soutenances', 'juries.id', '=', 'soutenances.jury_id')
-            ->whereNotNull('soutenances.creneau_id')
-            ->select('soutenances.creneau_id', 'jury_enseignant.enseignant_id')
-            ->get();
+        return $ordered;
+    }
 
-        foreach ($existingJuryMembers as $member) {
-            $slotOccupied[$member->creneau_id][$member->enseignant_id] = true;
+    private function compareProjects(Projet $a, Projet $b): int
+    {
+        return [
+            $this->normalizeFiliere($a->etudiant?->filiere ?? ''),
+            $a->id,
+        ] <=> [
+            $this->normalizeFiliere($b->etudiant?->filiere ?? ''),
+            $b->id,
+        ];
+    }
+
+    private function findBestPackage(
+        Projet $projet,
+        Collection $creneaux,
+        Collection $salles,
+        Collection $allProfessors,
+        array $state,
+        array $slotOrder
+    ): ?array {
+        $encadrant = $projet->encadrant;
+        if (!$encadrant) {
+            return null;
         }
 
-        foreach ($soutenances as $soutenance) {
-            $encadrantId = $soutenance->encadrant_id;
-            $currentCreneau = $soutenance->creneau;
-            if (!$currentCreneau)
+        $minDailyLoad = PHP_INT_MAX;
+        $minSlotLoad = PHP_INT_MAX;
+        $best = null;
+
+        foreach ($creneaux as $creneau) {
+            $slotIndex = $this->getSlotIndex($creneau, $slotOrder);
+            if ($slotIndex === null) {
                 continue;
-
-            $currentDate = $currentCreneau->date->format('Y-m-d');
-            $currentStart = strtotime($currentCreneau->heure_debut);
-
-            /**
-             * Trouver les créneaux bloqués pour la pause de 1h :
-             *   diff == 0     → même créneau (évidemment bloqué)
-             *   diff == 3600  → créneau suivant (pendant la pause obligatoire)
-             */
-            $creneauxBloquesIds = [];
-            foreach ($allCreneaux as $c) {
-                if ($c->date->format('Y-m-d') !== $currentDate)
-                    continue;
-                $slotOrder = [
-                    '09:00' => 0,
-                    '10:00' => 1,
-                    '11:00' => 2,
-                    '14:00' => 3,
-                    '15:00' => 4,
-                    '16:00' => 5,
-                    '17:00' => 6,
-                ];
-
-                $currentSlot = $slotOrder[substr((string) $currentCreneau->heure_debut, 0, 5)] ?? null;
-
-                $testSlot = $slotOrder[substr((string) $c->heure_debut, 0, 5)] ?? null;
-
-                if (
-                    $currentSlot !== null &&
-                    $testSlot !== null &&
-                    abs($currentSlot - $testSlot) <= 1
-                ) {
-                    $creneauxBloquesIds[] = $c->id;
-                }
             }
 
-            // Construire la liste des enseignants occupés
-            $enseignantsBusy = [];
+            $date = $creneau->date->format('Y-m-d');
+            $encadrantDailyLoad = $state['profDailyCount'][$encadrant->id][$date] ?? 0;
 
-            // L'encadrant est toujours occupé
-            if ($encadrantId) {
-                $enseignantsBusy[$encadrantId] = true;
+            if ($encadrantDailyLoad > $minDailyLoad) {
+                continue;
             }
 
-            // Ajouter les enseignants dans les créneaux bloqués
-            foreach ($creneauxBloquesIds as $cBlockId) {
-                foreach ($slotOccupied[$cBlockId] ?? [] as $profId => $_) {
-                    $enseignantsBusy[$profId] = true;
-                }
+            if (!$this->isProfessorAvailable($encadrant->id, $date, $slotIndex, $state)) {
+                continue;
             }
 
-            // Trier les profs par charge (moins de jurys = priorité)
-            $sortedProfs = $allProfessors
-                ->sortBy(fn($p) => $juryCount[$p->id] ?? 0)
+            $slotLoad = $this->slotLoad($date, $slotIndex, $state);
+            $isBetter = $encadrantDailyLoad < $minDailyLoad
+                || ($encadrantDailyLoad === $minDailyLoad && $slotLoad < $minSlotLoad);
+
+            if (!$isBetter) {
+                continue;
+            }
+
+            $salle = $this->getFreeRoom($date, $slotIndex, $salles, $state);
+            if (!$salle) {
+                continue;
+            }
+
+            $available = $allProfessors
+                ->filter(fn(Enseignant $professor) => $professor->id !== $encadrant->id)
+                ->filter(fn(Enseignant $professor) => $this->isProfessorAvailable(
+                    $professor->id,
+                    $date,
+                    $slotIndex,
+                    $state
+                ))
                 ->values();
 
-            // Niveau 1 : pause stricte 1h respectée
-            $encadrant = Enseignant::find($encadrantId);
-
-            $encadrantIsInfo = $encadrant
-                ? $this->isInfoProfessor($encadrant)
-                : false;
-
-            // Requirement:
-            // minimum 2 informatique professors INCLUDING encadrant
-
-            $requiredInfoRapporteurs = $encadrantIsInfo ? 1 : 2;
-            $membres = $this->pickRapporteurs(
-                $sortedProfs,
-                $enseignantsBusy,
-                2,
-                $requiredInfoRapporteurs
-            );
-
-            $membres = $this->pickRapporteurs(
-                $sortedProfs,
-                $enseignantsBusy,
-                2,
-                $requiredInfoRapporteurs
-            );
-
-            // Impossible to build valid jury
-            if (count($membres) < 2) {
+            if ($available->count() < 2) {
                 continue;
             }
 
-            // Créer le jury dans la table "juries"
-            $jury = Jury::create([]);
-
-            // Encadrant = Président
-            if ($encadrantId) {
-                $jury->enseignants()->attach($encadrantId, ['role' => 'President']);
-                $slotOccupied[$currentCreneau->id][$encadrantId] = true;
-            }
-
-            // Rapporteurs
-            foreach ($membres as $membre) {
-
-                $jury->enseignants()->attach(
-                    $membre->id,
-                    ['role' => 'Rapporteur']
-                );
-
-                // Mark professor as occupied in this slot
-                $slotOccupied[$currentCreneau->id][$membre->id] = true;
-
-                // Increment workload counter
-                $juryCount[$membre->id] =
-                    ($juryCount[$membre->id] ?? 0) + 1;
-            }
-
-            // Mettre à jour jury_id dans soutenances
-            $soutenance->update(['jury_id' => $jury->id]);
-        }
-    }
-
-    // ─── Helpers privés ───────────────────────────────────────────────────
-
-    /**
-     * Sélectionner $needed rapporteurs qui ne sont pas dans $busyMap.
-     */
-    private function pickRapporteurs(
-        $sortedProfs,
-        array $busyMap,
-        int $needed,
-        int $requiredInfo = 0
-    ): array {
-
-        $picked = [];
-        $localBusy = array_fill_keys(
-            array_keys($busyMap),
-            true
-        );
-
-        // STEP 1: prioritize informatique professors
-        foreach ($sortedProfs as $prof) {
-
-            if (count($picked) >= $requiredInfo) {
-                break;
-            }
-
-            if (isset($localBusy[$prof->id])) {
+            $rapporteurs = $this->pickBestJury($encadrant, $available, $state['profJuryCount']);
+            if (!$rapporteurs) {
                 continue;
             }
 
-            if (in_array($prof->id, array_map(fn($p) => $p->id, $picked))) {
-                continue;
-            }
-
-            if (!$this->isInfoProfessor($prof)) {
-                continue;
-            }
-
-            $picked[] = $prof;
-            $localBusy[$prof->id] = true;
-        }
-
-        // STEP 2: fill remaining slots
-        foreach ($sortedProfs as $prof) {
-
-            if (count($picked) >= $needed) {
-                break;
-            }
-
-            if (isset($localBusy[$prof->id])) {
-                continue;
-            }
-
-            if (in_array($prof->id, array_map(fn($p) => $p->id, $picked))) {
-                continue;
-            }
-
-            $picked[] = $prof;
-            $localBusy[$prof->id] = true;
-        }
-
-        return $picked;
-    }
-
-    /**
-     * Normaliser la filière en code court.
-     */
-    private function normalizeFiliere(string $f): string
-    {
-        $f = strtoupper($f);
-        if (str_contains($f, 'TDIA') || str_contains($f, 'TRANSFORM'))
-            return 'TDIA';
-        if (str_contains($f, 'ING') && str_contains($f, 'DONN'))
-            return 'ID';
-        if (str_contains($f, 'INFORMATIQUE') || $f === 'GI')
-            return 'GI';
-        return 'AUTRE';
-    }
-
-    private function isInfoProfessor(Enseignant $prof): bool
-    {
-        $s = strtoupper($prof->specialite ?? '');
-
-        return
-            str_contains($s, 'INFO') ||
-            str_contains($s, 'INFORMATIQUE') ||
-            str_contains($s, 'IA') ||
-            str_contains($s, 'DATA') ||
-            str_contains($s, 'DIGITAL');
-    }
-
-    /**
-     * Trouver le meilleur (créneau, salle) pour un encadrant.
-     *
-     * Pause obligatoire 1h pour l'encadrant :
-     *   diff <= 3600 entre deux soutenances = BLOQUÉ
-     */
-    private function pickCreneauAndSalle(
-        int $encadrantId,
-        $creneaux,
-        string $filiere,
-        array $perDayFiliereCount,
-        int $maxPerSlot = 999
-    ): ?array {
-        // Créneaux où l'encadrant a déjà une soutenance
-        $busyCreneaux = Soutenance::where('encadrant_id', $encadrantId)
-            ->with('creneau')
-            ->get()
-            ->map(fn($s) => $s->creneau)
-            ->filter();
-
-        // Compter les soutenances de l'encadrant par jour
-        $perDayCount = [];
-        foreach ($busyCreneaux as $bc) {
-            $d = $bc->date->format('Y-m-d');
-            $perDayCount[$d] = ($perDayCount[$d] ?? 0) + 1;
-        }
-
-        // Cache du nombre de soutenances par créneau
-        $slotCount = Soutenance::selectRaw('creneau_id, COUNT(*) as cnt')
-            ->groupBy('creneau_id')
-            ->pluck('cnt', 'creneau_id')
-            ->toArray();
-
-        // Trier les créneaux selon les priorités
-        $sorted = $creneaux->sortBy(function ($c) use ($perDayCount, $perDayFiliereCount, $filiere) {
-            $d = $c->date->format('Y-m-d');
-            $hasFiliereDay = isset($perDayFiliereCount[$d][$filiere]) ? 1 : 0;
-            return [
-                $hasFiliereDay,        // jours sans cette filière en priorité
-                $perDayCount[$d] ?? 0, // moins de charge encadrant en priorité
-                $d,                    // date la plus proche en priorité
-                $c->heure_debut,       // heure la plus tôt en priorité
+            $best = [
+                'creneau' => $creneau,
+                'salle' => $salle,
+                'rapporteurs' => $rapporteurs,
             ];
-        })->values();
+            $minDailyLoad = $encadrantDailyLoad;
+            $minSlotLoad = $slotLoad;
+        }
 
-        foreach ($sorted as $creneau) {
-            // Vérifier le cap par créneau
-            $alreadyInSlot = $slotCount[$creneau->id] ?? 0;
-            if ($alreadyInSlot >= $maxPerSlot)
-                continue;
+        return $best;
+    }
 
-            // Vérifier qu'il y a une salle libre
-            $salle = $this->pickSalle($creneau);
-            if (!$salle)
-                continue;
+    private function pickBestJury(Enseignant $encadrant, Collection $available, array $juryCount): ?array
+    {
+        $sorted = $available
+            ->sort(function (Enseignant $a, Enseignant $b) use ($juryCount) {
+                return [
+                    $juryCount[$a->id] ?? 0,
+                    $a->nom,
+                    $a->prenom,
+                    $a->id,
+                ] <=> [
+                    $juryCount[$b->id] ?? 0,
+                    $b->nom,
+                    $b->prenom,
+                    $b->id,
+                ];
+            })
+            ->values();
 
-            // Vérification pause obligatoire 1h pour l'encadrant
-            $conflict = false;
-            $creneauDate = $creneau->date->format('Y-m-d');
-            $slotOrder = [
-                '09:00' => 0,
-                '10:00' => 1,
-                '11:00' => 2,
-                '14:00' => 3,
-                '15:00' => 4,
-                '16:00' => 5,
-                '17:00' => 6,
-            ];
+        $encadrantIsInfo = $this->isInfoProfessor($encadrant);
+        $count = $sorted->count();
 
-            $currentSlot = $slotOrder[substr((string) $creneau->heure_debut, 0, 5)] ?? null;
+        for ($i = 0; $i < $count; $i++) {
+            for ($j = $i + 1; $j < $count; $j++) {
+                $first = $sorted[$i];
+                $second = $sorted[$j];
+                $infoCount = ($encadrantIsInfo ? 1 : 0)
+                    + ($this->isInfoProfessor($first) ? 1 : 0)
+                    + ($this->isInfoProfessor($second) ? 1 : 0);
 
-            foreach ($busyCreneaux as $busyCr) {
-
-                if ($busyCr->date->format('Y-m-d') !== $creneauDate)
-                    continue;
-
-                $busySlot = $slotOrder[substr((string) $busyCr->heure_debut, 0, 5)] ?? null;
-
-                if ($currentSlot === null || $busySlot === null)
-                    continue;
-
-                // SAME slot OR consecutive slot forbidden
-                if (abs($currentSlot - $busySlot) <= 1) {
-                    $conflict = true;
-                    break;
+                if ($infoCount >= 2) {
+                    return [$first, $second];
                 }
             }
-
-            if ($conflict)
-                continue;
-
-            // Mettre à jour le cache
-            $slotCount[$creneau->id] = $alreadyInSlot + 1;
-
-            return [$creneau, $salle];
         }
 
         return null;
     }
 
-    /**
-     * Trouver une salle libre dans ce créneau.
-     * Utilise la colonne "salle" (string) de la table soutenances.
-     */
-    private function pickSalle(Creneau $creneau): ?Salle
+    private function persistPackage(Projet $projet, array $package): void
     {
-        $sallesUtilisees = Soutenance::where('creneau_id', $creneau->id)
-            ->pluck('salle')
-            ->toArray();
+        DB::transaction(function () use ($projet, $package) {
+            $jury = Jury::create([]);
+            $jury->enseignants()->attach($projet->encadrant_id, ['role' => 'President']);
 
-        return Salle::whereNotIn('nom', $sallesUtilisees)->first();
+            foreach ($package['rapporteurs'] as $rapporteur) {
+                $jury->enseignants()->attach($rapporteur->id, ['role' => 'Rapporteur']);
+            }
+
+            Soutenance::create([
+                'cne' => $projet->cne ?? $projet->etudiant?->cne,
+                'projet_id' => $projet->id,
+                'encadrant_id' => $projet->encadrant_id,
+                'jury_id' => $jury->id,
+                'creneau_id' => $package['creneau']->id,
+                'salle_id' => $package['salle']->id,
+                'salle' => $package['salle']->nom,
+                'langue' => $projet->langue_soutenance ?? 'Francais',
+            ]);
+        });
+    }
+
+    private function markPackageInState(Projet $projet, array $package, array &$state, array $slotOrder): void
+    {
+        $creneau = $package['creneau'];
+        $slotIndex = $this->getSlotIndex($creneau, $slotOrder);
+        if ($slotIndex === null) {
+            return;
+        }
+
+        $date = $creneau->date->format('Y-m-d');
+        $this->markProfessorBusy($projet->encadrant_id, $date, $slotIndex, $state);
+
+        foreach ($package['rapporteurs'] as $rapporteur) {
+            $this->markProfessorBusy($rapporteur->id, $date, $slotIndex, $state);
+            $state['profJuryCount'][$rapporteur->id] = ($state['profJuryCount'][$rapporteur->id] ?? 0) + 1;
+        }
+
+        $state['roomBusy'][$date][$slotIndex][$package['salle']->id] = true;
+    }
+
+    private function buildPlanningState(Collection $professors, Collection $salles, array $slotOrder): array
+    {
+        $state = [
+            'profBusyAtSlot' => [],
+            'profSchedule' => [],
+            'profJuryCount' => [],
+            'profDailyCount' => [],
+            'roomBusy' => [],
+        ];
+
+        foreach ($professors as $professor) {
+            $state['profSchedule'][$professor->id] = [];
+            $state['profJuryCount'][$professor->id] = 0;
+            $state['profDailyCount'][$professor->id] = [];
+        }
+
+        $salleIdsByName = $salles->mapWithKeys(fn(Salle $salle) => [$salle->nom => $salle->id])->toArray();
+
+        Soutenance::with(['creneau', 'jury.enseignants'])->get()->each(function (Soutenance $soutenance) use (&$state, $slotOrder, $salleIdsByName) {
+            $slotIndex = $this->getSlotIndex($soutenance->creneau, $slotOrder);
+            if (!$soutenance->creneau || $slotIndex === null) {
+                return;
+            }
+
+            $date = $soutenance->creneau->date->format('Y-m-d');
+            $participants = [];
+
+            if ($soutenance->encadrant_id) {
+                $participants[$soutenance->encadrant_id] = true;
+            }
+
+            if ($soutenance->jury) {
+                foreach ($soutenance->jury->enseignants as $membre) {
+                    $participants[$membre->id] = true;
+                    if (($membre->pivot->role ?? 'Rapporteur') !== 'President') {
+                        $state['profJuryCount'][$membre->id] = ($state['profJuryCount'][$membre->id] ?? 0) + 1;
+                    }
+                }
+            }
+
+            foreach (array_keys($participants) as $profId) {
+                $this->markProfessorBusy((int) $profId, $date, $slotIndex, $state);
+            }
+
+            $salleId = $soutenance->salle_id ?: ($salleIdsByName[$soutenance->salle] ?? null);
+            if ($salleId) {
+                $state['roomBusy'][$date][$slotIndex][$salleId] = true;
+            }
+        });
+
+        return $state;
+    }
+
+    private function markProfessorBusy(int $profId, string $date, int $slotIndex, array &$state): void
+    {
+        $key = $date . '|' . $slotIndex;
+        $alreadyPlanned = isset($state['profSchedule'][$profId][$key]);
+
+        $state['profBusyAtSlot'][$date][$slotIndex][$profId] = true;
+        $state['profSchedule'][$profId][$key] = true;
+
+        if (!$alreadyPlanned) {
+            $state['profDailyCount'][$profId][$date] = ($state['profDailyCount'][$profId][$date] ?? 0) + 1;
+        }
+    }
+
+    private function isProfessorAvailable(int $profId, string $date, int $slotIndex, array $state): bool
+    {
+        if (isset($state['profBusyAtSlot'][$date][$slotIndex][$profId])) {
+            return false;
+        }
+
+        foreach ($state['profSchedule'][$profId] ?? [] as $key => $_) {
+            [$plannedDate, $plannedSlot] = explode('|', $key);
+            if ($plannedDate !== $date) {
+                continue;
+            }
+
+            if (abs(((int) $plannedSlot) - $slotIndex) <= 1) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function slotLoad(string $date, int $slotIndex, array $state): int
+    {
+        return count($state['roomBusy'][$date][$slotIndex] ?? []);
+    }
+
+    private function getFreeRoom(string $date, int $slotIndex, Collection $salles, array $state): ?Salle
+    {
+        foreach ($salles as $salle) {
+            if (!isset($state['roomBusy'][$date][$slotIndex][$salle->id])) {
+                return $salle;
+            }
+        }
+
+        return null;
+    }
+
+    private function ensureSallesExist(): void
+    {
+        if (Salle::count() > 0) {
+            return;
+        }
+
+        foreach (self::DEFAULT_ROOMS as $roomName) {
+            Salle::create([
+                'nom' => $roomName,
+                'capacite' => 30,
+            ]);
+        }
+    }
+
+    private function officialCreneaux(array $slotOrder): Collection
+    {
+        return Creneau::orderBy('date')
+            ->orderBy('heure_debut')
+            ->get()
+            ->filter(fn(Creneau $creneau) => $this->getSlotIndex($creneau, $slotOrder) !== null)
+            ->sort(function (Creneau $a, Creneau $b) use ($slotOrder) {
+                return [
+                    $a->date->format('Y-m-d'),
+                    $this->getSlotIndex($a, $slotOrder),
+                ] <=> [
+                    $b->date->format('Y-m-d'),
+                    $this->getSlotIndex($b, $slotOrder),
+                ];
+            })
+            ->values();
+    }
+
+    private function workingDates(string $dateDebut, int $days): array
+    {
+        $dates = [];
+        $current = new \DateTimeImmutable($dateDebut);
+
+        while (count($dates) < $days) {
+            $dayOfWeek = (int) $current->format('N');
+            if ($dayOfWeek < 6) {
+                $dates[] = $current->format('Y-m-d');
+            }
+
+            $current = $current->modify('+1 day');
+        }
+
+        return $dates;
+    }
+
+    private function officialSlotRanges(): array
+    {
+        return [
+            '09:00' => '10:00',
+            '10:00' => '11:00',
+            '11:00' => '12:00',
+            '14:00' => '15:00',
+            '15:00' => '16:00',
+            '16:00' => '17:00',
+            '17:00' => '18:00',
+        ];
+    }
+
+    private function slotOrder(): array
+    {
+        return [
+            '09:00' => 0,
+            '10:00' => 1,
+            '11:00' => 2,
+            '14:00' => 3,
+            '15:00' => 4,
+            '16:00' => 5,
+            '17:00' => 6,
+        ];
+    }
+
+    private function getSlotIndex(?Creneau $creneau, array $slotOrder): ?int
+    {
+        if (!$creneau) {
+            return null;
+        }
+
+        $slotKey = is_object($creneau->heure_debut)
+            ? $creneau->heure_debut->format('H:i')
+            : substr((string) $creneau->heure_debut, 0, 5);
+
+        return $slotOrder[$slotKey] ?? null;
+    }
+
+    private function normalizeFiliere(string $filiere): string
+    {
+        $filiere = strtoupper($filiere);
+
+        if (str_contains($filiere, 'TDIA') || str_contains($filiere, 'TRANSFORM')) {
+            return 'TDIA';
+        }
+
+        if (str_contains($filiere, 'ING') && str_contains($filiere, 'DONN')) {
+            return 'ID';
+        }
+
+        if (str_contains($filiere, 'INFORMATIQUE') || $filiere === 'GI') {
+            return 'GI';
+        }
+
+        return 'AUTRE';
+    }
+
+    private function isInfoProfessor(Enseignant $professor): bool
+    {
+        return str_contains(strtolower($professor->specialite ?? ''), 'info');
     }
 }

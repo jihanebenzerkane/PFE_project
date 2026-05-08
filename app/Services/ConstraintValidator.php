@@ -3,13 +3,13 @@
 namespace App\Services;
 
 use App\Models\Creneau;
-use App\Models\Soutenance;
 use App\Models\Enseignant;
 use App\Models\Jury;
+use App\Models\Soutenance;
+use Illuminate\Support\Facades\Log;
 
 class ConstraintValidator
 {
-    // Valide toutes les règles en même temps
     public function validateAll(
         int $ensId,
         int $creneauId,
@@ -23,63 +23,48 @@ class ConstraintValidator
             && $this->validateDailyBalance($ensId, $creneauId);
     }
 
-    // Règle 1 : la salle est-elle libre dans ce créneau ?
     public function validateCapacity(int $salleId, int $creneauId): bool
     {
-        $dejaOccupee = Soutenance::where('salle_id', $salleId)
+        $isOccupied = Soutenance::where('salle_id', $salleId)
             ->where('creneau_id', $creneauId)
             ->exists();
 
-        return !$dejaOccupee;
+        if ($isOccupied) {
+            Log::warning('Slot rejected: salle already occupied.', [
+                'salle_id' => $salleId,
+                'creneau_id' => $creneauId,
+            ]);
+        }
+
+        return !$isOccupied;
     }
 
-    // Règle 2 : l'enseignant est-il déjà occupé dans ce créneau ?
     public function validateNoConflict(int $ensId, int $creneauId): bool
     {
-        // Déjà encadrant dans ce créneau ?
-        $dejaEncadrant = Soutenance::where('creneau_id', $creneauId)
-            ->where('encadrant_id', $ensId)
-            ->exists();
+        $slotOrder = $this->slotOrder();
+        $targetCreneau = Creneau::find($creneauId);
+        $targetSlot = $this->getSlotIndex($targetCreneau, $slotOrder);
 
-        // Déjà dans un jury dans ce créneau ?
-        $dejaJury = Soutenance::where('creneau_id', $creneauId)
-            ->whereHas('jury.enseignants', function ($q) use ($ensId) {
-                $q->where('enseignant_id', $ensId);
-            })
-            ->exists();
-
-        return !$dejaEncadrant && !$dejaJury;
-    }
-
-    // Règle 3 : l'enseignant n'a pas dépassé son quota ?
-    public function validateQuotas(int $ensId): bool
-    {
-        $enseignant = Enseignant::find($ensId);
-
-        // Combien de jurys il a déjà fait ?
-        $nbJurys = Jury::whereHas('enseignants', function ($q) use ($ensId) {
-            $q->where('enseignant_id', $ensId);
-        })->count();
-
-        return $nbJurys < $enseignant->quota_max;
-    }
-
-    // Règle 4 : le jury est bien formé ?
-    public function validateJuryComposition(Jury $jury): bool
-    {
-        $membres = $jury->enseignants;
-
-        // Le jury doit avoir exactement 2 membres
-        if ($membres->count() !== 2) {
+        if (!$targetCreneau || $targetSlot === null) {
+            Log::warning('Slot rejected: official slot not found.', [
+                'enseignant_id' => $ensId,
+                'creneau_id' => $creneauId,
+            ]);
             return false;
         }
 
-        // Récupérer la soutenance liée à ce jury
-        $soutenance = $jury->soutenance;
+        $targetDate = $targetCreneau->date->format('Y-m-d');
+        $busySlots = $this->getProfessorBusySlots($ensId, $targetDate, $slotOrder);
 
-        // L'encadrant ne peut pas être membre du jury
-        foreach ($membres as $membre) {
-            if ($membre->id === $soutenance->encadrant_id) {
+        foreach ($busySlots as $busySlot) {
+            if (abs($targetSlot - $busySlot) <= 1) {
+                Log::info('Professor rejected by hard rest rule.', [
+                    'enseignant_id' => $ensId,
+                    'creneau_id' => $creneauId,
+                    'target_slot' => $targetSlot,
+                    'busy_slot' => $busySlot,
+                    'date' => $targetDate,
+                ]);
                 return false;
             }
         }
@@ -87,26 +72,170 @@ class ConstraintValidator
         return true;
     }
 
-    // Règle 5 : l'enseignant n'intervient pas trop ce jour-là ?
+    public function validateQuotas(int $ensId): bool
+    {
+        $enseignant = Enseignant::find($ensId);
+        if (!$enseignant) {
+            return false;
+        }
+
+        $nbJurys = Jury::whereHas('enseignants', function ($q) use ($ensId) {
+            $q->where('enseignant_id', $ensId);
+        })->count();
+
+        $quota = $enseignant->quota_max ?? max(1, (int) ceil(Jury::count() / max(1, Enseignant::count())) + 2);
+        $isValid = $nbJurys < $quota;
+
+        if (!$isValid) {
+            Log::info('Professor rejected by overload quota.', [
+                'enseignant_id' => $ensId,
+                'current_jury_count' => $nbJurys,
+                'quota' => $quota,
+            ]);
+        }
+
+        return $isValid;
+    }
+
+    public function validateJuryComposition(Jury $jury): bool
+    {
+        $membres = $jury->enseignants;
+        $memberIds = $membres->pluck('id')->all();
+
+        if (count($memberIds) !== count(array_unique($memberIds))) {
+            Log::warning('Duplicate detected: duplicate professor in jury.', [
+                'jury_id' => $jury->id,
+                'member_ids' => $memberIds,
+            ]);
+            return false;
+        }
+
+        if ($membres->count() !== 3) {
+            Log::warning('Jury rejected: invalid member count.', [
+                'jury_id' => $jury->id,
+                'member_count' => $membres->count(),
+            ]);
+            return false;
+        }
+
+        $soutenance = $jury->soutenance;
+        if (!$soutenance) {
+            return true;
+        }
+
+        if ($soutenance->encadrant_id && in_array($soutenance->encadrant_id, $memberIds, true)) {
+            Log::warning('Duplicate detected: encadrant also appears in jury.', [
+                'jury_id' => $jury->id,
+                'soutenance_id' => $soutenance->id,
+                'encadrant_id' => $soutenance->encadrant_id,
+            ]);
+            return false;
+        }
+
+        $slotOrder = $this->slotOrder();
+        $creneau = $soutenance->creneau;
+        $slotIndex = $this->getSlotIndex($creneau, $slotOrder);
+
+        if (!$creneau || $slotIndex === null) {
+            return false;
+        }
+
+        $date = $creneau->date->format('Y-m-d');
+        foreach ($memberIds as $memberId) {
+            foreach ($this->getProfessorBusySlots($memberId, $date, $slotOrder, $soutenance->id) as $busySlot) {
+                if (abs($slotIndex - $busySlot) <= 1) {
+                    Log::info('Professor rejected from jury by adjacent-slot rest rule.', [
+                        'jury_id' => $jury->id,
+                        'soutenance_id' => $soutenance->id,
+                        'enseignant_id' => $memberId,
+                        'slot' => $slotIndex,
+                        'busy_slot' => $busySlot,
+                        'date' => $date,
+                    ]);
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
     public function validateDailyBalance(int $ensId, int $creneauId): bool
     {
         $creneau = Creneau::find($creneauId);
-        $date    = $creneau->date;
+        if (!$creneau) {
+            return false;
+        }
 
-        // Fois où il est encadrant ce jour
-        $nbEncadrant = Soutenance::where('encadrant_id', $ensId)
+        $date = $creneau->date->format('Y-m-d');
+        $total = count($this->getProfessorBusySlots($ensId, $date, $this->slotOrder()));
+        $maxDailyLoad = 3;
+        $isValid = $total < $maxDailyLoad;
+
+        if (!$isValid) {
+            Log::info('Professor rejected by daily overload.', [
+                'enseignant_id' => $ensId,
+                'date' => $date,
+                'daily_load' => $total,
+                'max_daily_load' => $maxDailyLoad,
+            ]);
+        }
+
+        return $isValid;
+    }
+
+    private function getProfessorBusySlots(
+        int $ensId,
+        string $date,
+        array $slotOrder,
+        ?int $ignoreSoutenanceId = null
+    ): array {
+        $busySlots = [];
+
+        $query = Soutenance::with('creneau', 'jury.enseignants')
             ->whereHas('creneau', fn($q) => $q->where('date', $date))
-            ->count();
+            ->where(function ($query) use ($ensId) {
+                $query->where('encadrant_id', $ensId)
+                    ->orWhereHas('jury.enseignants', fn($q) => $q->where('enseignant_id', $ensId));
+            });
 
-        // Fois où il est dans un jury ce jour
-        $nbJury = Soutenance::whereHas('jury.enseignants', function ($q) use ($ensId) {
-                $q->where('enseignant_id', $ensId);
-            })
-            ->whereHas('creneau', fn($q) => $q->where('date', $date))
-            ->count();
+        if ($ignoreSoutenanceId) {
+            $query->where('id', '!=', $ignoreSoutenanceId);
+        }
 
-        $total = $nbEncadrant + $nbJury;
+        foreach ($query->get() as $soutenance) {
+            $slotIndex = $this->getSlotIndex($soutenance->creneau, $slotOrder);
+            if ($slotIndex !== null) {
+                $busySlots[$slotIndex] = $slotIndex;
+            }
+        }
 
-        return $total < 4;
+        return array_values($busySlots);
+    }
+
+    private function slotOrder(): array
+    {
+        return [
+            '09:00' => 0,
+            '10:00' => 1,
+            '11:00' => 2,
+            '14:00' => 3,
+            '15:00' => 4,
+            '16:00' => 5,
+            '17:00' => 6,
+        ];
+    }
+
+    private function getSlotIndex(?Creneau $creneau, array $slotOrder): ?int
+    {
+        if (!$creneau) {
+            return null;
+        }
+
+        $slotKey = is_object($creneau->heure_debut)
+            ? $creneau->heure_debut->format('H:i')
+            : substr((string) $creneau->heure_debut, 0, 5);
+
+        return $slotOrder[$slotKey] ?? null;
     }
 }

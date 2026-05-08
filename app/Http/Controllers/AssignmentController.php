@@ -11,6 +11,8 @@ use App\Models\Enseignant;
 use App\Models\Projet;
 use App\Models\AffectationSnapshot;
 use App\Models\PlanningSnapshot;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 class AssignmentController extends Controller
 {
@@ -122,28 +124,23 @@ class AssignmentController extends Controller
     public function runAlgorithm(Request $request)
     {
         try {
-            // Nettoyer les anciennes données
-            \Illuminate\Support\Facades\DB::statement('SET FOREIGN_KEY_CHECKS=0;');
-            \Illuminate\Support\Facades\DB::table('jury_enseignant')->truncate();
-            \App\Models\Jury::truncate();
-            \App\Models\Soutenance::truncate();
-            \App\Models\Creneau::truncate();
-            \App\Models\PlanningSnapshot::truncate();
-            \Illuminate\Support\Facades\DB::statement('SET FOREIGN_KEY_CHECKS=1;');
-
-            // ── CHANGEMENT 1 : valider une seule date de début ──
             $request->validate([
                 'date_debut' => 'required|date',
             ]);
             $dateDebut = $request->input('date_debut');
 
-            // Assigner les encadrants si pas encore fait
-            $this->assignmentService->assignStudentsToEncadrants();
+            DB::transaction(function () use ($dateDebut) {
+                DB::table('jury_enseignant')->delete();
+                Soutenance::query()->delete();
+                \App\Models\Jury::query()->delete();
+                \App\Models\Creneau::query()->delete();
+                PlanningSnapshot::query()->delete();
 
-            // ── CHANGEMENT 2 : passer une seule date de début ──
-            $this->assignmentService->planifierCreneaux($dateDebut);
-            $this->assignmentService->runAssignment();
-            $this->assignmentService->buildJuries();
+                $this->assignmentService->assignStudentsToEncadrants();
+                $this->assignmentService->planifierCreneaux($dateDebut);
+                $this->assignmentService->runAssignment();
+                $this->assignmentService->buildJuries();
+            });
 
             // Construire le snapshot
             $soutenances = Soutenance::with([
@@ -190,6 +187,8 @@ class AssignmentController extends Controller
             $affectes = count($scheduledIds);
             $nonAffectes = max(0, $totalEtudiants - $affectes);
             $pct = $totalEtudiants > 0 ? round(($affectes / $totalEtudiants) * 100) : 0;
+            $totalProjects = $this->canonicalProjects()->count();
+            $scheduledProjects = Soutenance::distinct('projet_id')->count('projet_id');
 
             PlanningSnapshot::create([
                 'label' => 'Planning du ' . now()->format('d/m/Y à H:i'),
@@ -203,11 +202,14 @@ class AssignmentController extends Controller
                     ->groupBy(fn($c) => $c->date->format('Y-m-d'))
                     ->count();
 
-                $nbSalles = \App\Models\Salle::count();
                 $nbCreneauxParJour = \App\Models\Creneau::select('heure_debut')
                     ->distinct()
                     ->count();
-                $capaciteMax = $nbDates * $nbCreneauxParJour * $nbSalles;
+                $capaciteMax =
+                    $nbDates *
+                    $nbCreneauxParJour *
+                    app(\App\Services\AssignmentService::class)
+                        ->maxSoutenancesPerSlot();
 
                 $etudiantsNonAffectes = Etudiant::whereNotIn('id', $scheduledIds)->get();
 
@@ -216,10 +218,12 @@ class AssignmentController extends Controller
                     'total' => $totalEtudiants,
                     'affectes' => $affectes,
                     'non_affectes' => $nonAffectes,
-                    'nb_salles' => $nbSalles,
+                    'total_projets' => $totalProjects,
+                    'projets_planifies' => $scheduledProjects,
+                    'projets_non_planifies' => max(0, $totalProjects - $scheduledProjects),
                     'nb_dates' => $nbDates,
                     'capacite_max' => $capaciteMax,
-                    'manque_capacite' => max(0, $totalEtudiants - $capaciteMax),
+                    'manque_capacite' => max(0, $totalProjects - $capaciteMax),
                     'etudiants_manquants' => $etudiantsNonAffectes->map(function ($e) {
                         $projet = $this->projectForStudent($e);
                         return [
@@ -234,13 +238,13 @@ class AssignmentController extends Controller
                 ];
 
                 session(['conformite_diagnostic' => $diagnostic]);
-                \Illuminate\Support\Facades\Storage::put('conformite_diagnostic.json', json_encode($diagnostic));
+                Storage::put('conformite_diagnostic.json', json_encode($diagnostic));
 
                 return redirect()->route('planning.results')
                     ->with('warning', "⚠️ Seulement {$pct}% des étudiants ont pu être planifiés ({$affectes}/{$totalEtudiants}). Consultez le <a href=\"" . route('conformite.index') . "\" class=\"alert-link fw-bold\">Contrôle de Conformité</a> pour plus de détails.");
             }
 
-            \Illuminate\Support\Facades\Storage::delete('conformite_diagnostic.json');
+            Storage::delete('conformite_diagnostic.json');
 
             return redirect()->route('planning.results')
                 ->with('success', "✓ {$pct}% des étudiants affectés. Aucun conflit d'horaire détecté.");
