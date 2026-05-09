@@ -8,7 +8,12 @@ class EtudiantRepository
 {
     public function create(array $data): Etudiant
     {
-        return Etudiant::create($data);
+        return Etudiant::create($data); //calls Model::create() return un nv etd instance avec son id
+    }
+
+    public function updateOrCreate(array $attributes, array $values): Etudiant
+    {
+        return Etudiant::updateOrCreate($attributes, $values);
     }
 
     public function findByNomPrenom(string $nom, string $prenom): ?Etudiant

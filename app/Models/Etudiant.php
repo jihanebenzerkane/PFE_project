@@ -13,9 +13,4 @@ class Etudiant extends Model
     {
         return $this->hasOne(Projet::class);
     }
-
-    public function projets()
-    {
-        return $this->hasMany(Projet::class);
-    }
 }

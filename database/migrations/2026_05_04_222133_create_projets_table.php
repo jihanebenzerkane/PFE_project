@@ -14,7 +14,7 @@ return new class extends Migration
         Schema::create('projets', function (Blueprint $table) {
             $table->id();
             $table->string('cne')->nullable();
-            $table->foreignId('etudiant_id')->constrained('etudiants')->onDelete('cascade');
+            $table->foreignId('etudiant_id')->constrained('etudiants')->onDelete('cascade'); // si on a supprimer un etudiant le projet aussi doit etre supprimé
             $table->foreignId('etudiant2_id')->nullable()->constrained('etudiants')->onDelete('set null');
             $table->string('sujet')->nullable();
             $table->string('titre')->nullable();

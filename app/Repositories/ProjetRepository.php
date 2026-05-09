@@ -18,7 +18,6 @@ class ProjetRepository
 
     public function all(): \Illuminate\Database\Eloquent\Collection
     {
-        // Eager loading — Laravel fetches everything at once, not project by project
-        return Projet::with('etudiant')->get();
+        return Projet::with('etudiant')->get(); 
     }
 }

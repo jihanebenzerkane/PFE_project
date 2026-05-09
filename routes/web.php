@@ -14,10 +14,11 @@ Route::get('/', [AssignmentController::class, 'dashboard'])->name('dashboard');
 
 // ─── Import ───────────────────────────────────────────────────────────────────
 Route::get('/import', [ImportController::class, 'showForm'])->name('import.form');
-Route::post('/import/master', [ImportController::class, 'importMaster'])->name('import.master');
 Route::post('/import/etudiants', [ImportController::class, 'importEtudiants'])->name('import.etudiants');
-Route::post('/import/profs', [ImportController::class, 'importProfs'])->name('import.profs');
-
+Route::post('/import/enseignants', [ImportController::class, 'importEnseignants'])->name('import.enseignants');
+Route::post('/import/salles', [ImportController::class, 'importSalles'])->name('import.salles');
+Route::post('/import/all', [ImportController::class, 'importAll'])->name('import.all');
+Route::post('/import/clear', [ImportController::class, 'clearData'])->name('import.clear');
 // ─── Affectation des Encadrants ───────────────────────────────────────────────
 Route::get('/affectation', [AssignmentController::class, 'showAffectation'])->name('affectation.index');
 Route::post('/affectation/run', [AssignmentController::class, 'runAffectation'])->name('affectation.run');
